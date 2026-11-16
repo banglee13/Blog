@@ -8,6 +8,7 @@ const Archive = lazy(() => import('./pages/Archive'))
 const TagsPage = lazy(() => import('./pages/TagsPage'))
 const Toolbox = lazy(() => import('./pages/Toolbox'))
 const EchoCave = lazy(() => import('./pages/EchoCave'))
+const GenshinData = lazy(() => import('./pages/GenshinData'))
 const About = lazy(() => import('./pages/About'))
 const Login = lazy(() => import('./pages/Login'))
 const Admin = lazy(() => import('./pages/Admin'))
@@ -35,6 +36,8 @@ export default function App() {
           <Route path="tags/:tag" element={<TagsPage />} />
           <Route path="toolbox" element={<Toolbox />} />
           <Route path="toolbox/echo" element={<EchoCave />} />
+          <Route path="toolbox/genshin" element={<GenshinData />} />
+          <Route path="toolbox/genshin/:kind/:id" element={<GenshinData />} />
           <Route path="about" element={<About />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="login" element={<Login />} />
