@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "version": "7.2.0",
+  "language": "chs",
+  "retrievedAt": "2026-11-16T09:37:45.751Z",
+  "source": "https://api.lunaris.moe",
+  "characters": {
+    "listed": 139,
+    "downloaded": 138
+  },
+  "weapons": {
+    "listed": 257,
+    "downloaded": 257
+  },
+  "images": {
+    "downloaded": 1821,
+    "bytes": 10566766
+  },
+  "missing": [
+    {
+      "kind": "characters",
+      "id": "10000134",
+      "status": 404,
+      "reason": "版本清单中的特殊旅行者记录没有对应详情文件"
+    }
+  ],
+  "sha256": {
+    "characters.json": "12901a71041efd509ba847dc3ff0de63d3bdc4539e8aa247599eaa95b5dc9824",
+    "weapons.json": "bf3e5c9cbf76abdfab75e9eb82682de22c80d90077bdd762389a956f3e895461",
+    "catalog.json": "8a600096271904e6ddc21ffc0cc3631cb2ec4de5f9df42cd336530ffabcb89cf",
+    "source-lists.json": "1cb94cf59a6df17431b38ff5b969cf1be20e4846a2e90c7183c596b69a58c2c9",
+    "portraits.json": "dd8121826badda2ccd168757ae3e4bc4ab6ef3ea517ddd1ffb8062d4c9f7510a",
+    "skill-icons.json": "1763a625943515a1d2338e218e3486e1ed1012bda5fced1cc41d5f98a31ec81a",
+    "characters.gz.base64": "2dad53b22afe5d70d4f12038ec7294fa43ef22f5cdd5fe44c5024c962b53d046",
+    "weapons.gz.base64": "f4b3643c51561c03f6bbfe65496b4a2b08a01a6a77c3cc0b305ead891b7e2043"
+  }
+}
