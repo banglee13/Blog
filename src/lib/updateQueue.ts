@@ -8,8 +8,11 @@
  *   - 删除仓库文章（post-delete）
  *   - 发表申请 PR（post-pr，由无 push 权限的用户提交）
  *   - 上传图片（image-upload，图片本体以 data URL 暂存本地）
- *   - 账号偏好同步（settings-sync，如字体、背景偏好文件）
  *   - 历史版本名称（version-name，写入文章旁的 {slug}.versions.json）
+ *
+ * 个人设置不在此列：它们由 settingsSync.ts 自动保存到 GitHub Discussions，不写入仓库（issue #130）。
+ * 旧版曾把字体 / 外观偏好作为 settings-sync 条目放进这个队列；升级后浏览器里残留的这类条目
+ * 在读取队列时会被直接丢弃（见 QUEUE_KINDS），不会再被提交到仓库。
  */
 import {
   commitFileChanges,
@@ -29,23 +32,20 @@ export type QueueItemKind =
   | 'post-delete'
   | 'post-pr'
   | 'image-upload'
-  | 'settings-sync'
   | 'version-name'
 
 export interface QueueItem {
   id: string
   kind: QueueItemKind
-  /** 展示标题（文章标题 / 图片文件名 / 偏好说明） */
+  /** 展示标题（文章标题 / 图片文件名） */
   title: string
-  /** 文章 slug、图片仓库路径或设置文件路径 */
+  /** 文章 slug 或图片仓库路径 */
   target: string
   createdAt: number
   /** post-publish / post-pr：待写入的完整 Markdown */
   markdown?: string
   /** post-pr：修改 slug 时旧文件的 slug，PR 中一并删除它 */
   renamedFrom?: string
-  /** settings-sync：待写入的文本内容 */
-  text?: string
   /** image-upload：本地 data URL 与最终仓库访问地址 */
   dataUrl?: string
   url?: string
@@ -82,7 +82,7 @@ const POST_KINDS: QueueItemKind[] = ['post-publish', 'post-delete', 'post-pr']
  */
 const MAX_IMAGE_DATAURL_CHARS = OFFLINE ? 32_000_000 : 3_200_000
 
-const QUEUE_KINDS: QueueItemKind[] = ['post-publish', 'post-delete', 'post-pr', 'image-upload', 'settings-sync', 'version-name']
+const QUEUE_KINDS: QueueItemKind[] = ['post-publish', 'post-delete', 'post-pr', 'image-upload', 'version-name']
 
 function readStore(): QueueItem[] {
   if (typeof localStorage === 'undefined') return []
@@ -127,7 +127,7 @@ function makeId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-/** 加入队列；同 slug 的文章意图、同路径的设置文件、同文章的版本名称会替换旧条目（最新意图生效）。 */
+/** 加入队列；同 slug 的文章意图、同文章的版本名称会替换旧条目（最新意图生效）。 */
 export function enqueueUpdate(
   item: Omit<QueueItem, 'id' | 'createdAt'>,
 ): QueueItem {
@@ -137,8 +137,6 @@ export function enqueueUpdate(
     items = items.filter(
       (entry) => !(POST_KINDS.includes(entry.kind) && entry.target === next.target),
     )
-  } else if (next.kind === 'settings-sync') {
-    items = items.filter((entry) => !(entry.kind === 'settings-sync' && entry.target === next.target))
   } else if (next.kind === 'version-name') {
     // 同一篇文章的多次改名合并进同一条目：逐 sha 以最新名称（含恢复默认）为准
     const existing = items.find((entry) => entry.kind === 'version-name' && entry.target === next.target)
@@ -180,10 +178,6 @@ export function enqueuePostPr(
     markdown,
     renamedFrom: renamedFrom && renamedFrom !== post.slug ? renamedFrom : undefined,
   })
-}
-
-export function enqueueSettingsSync(path: string, title: string, text: string): QueueItem {
-  return enqueueUpdate({ kind: 'settings-sync', title, target: path, text })
 }
 
 /**
@@ -399,8 +393,6 @@ function describeItem(item: QueueItem): string {
       return `发表申请《${item.title}》`
     case 'image-upload':
       return `上传图片 ${item.title}`
-    case 'settings-sync':
-      return item.title
     case 'version-name':
       return `更新《${item.title}》的版本名称`
   }
@@ -416,8 +408,6 @@ function singleCommitMessage(item: QueueItem): string {
       return `chore(blog): 上传图片 ${item.title}`
     case 'post-pr':
       return `post(blog): ${item.title}`
-    case 'settings-sync':
-      return `chore(settings): ${item.title}`
     case 'version-name':
       return `chore(blog): 更新文章《${item.title}》的版本名称`
   }
@@ -440,7 +430,7 @@ function bestEffort(fn: () => unknown) {
 
 /**
  * 执行队列更新：
- *   - 文件类更改（文章、图片、设置、版本名称）合并为一次 Git 提交（一次部署）；
+ *   - 文件类更改（文章、图片、版本名称）合并为一次 Git 提交（一次部署）；
  *   - 发表申请逐个创建 PR。
  * 失败的条目会保留在队列中，成功的条目自动移除。
  */
@@ -528,7 +518,6 @@ export async function flushUpdateQueue(selected?: QueueItem[]): Promise<FlushRes
     const changes: FileChange[] = fileItems.map((item) => {
       if (item.kind === 'post-delete') return { path: postFilePath(item.target), delete: true }
       if (item.kind === 'post-publish') return { path: postFilePath(item.target), text: item.markdown ?? '' }
-      if (item.kind === 'settings-sync') return { path: item.target, text: item.text ?? '' }
       // image-upload
       return {
         path: item.target,

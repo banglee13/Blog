@@ -6,12 +6,14 @@ import {
   ArrowUp,
   CheckCircle2,
   Cloud,
+  CloudAlert,
   CloudRain,
   Columns2,
   Download,
   ExternalLink,
   Flower2,
   Github,
+  Image as ImageIcon,
   Laptop,
   Loader2,
   LockKeyhole,
@@ -23,6 +25,7 @@ import {
   Paintbrush,
   Palette,
   Plus,
+  RefreshCw,
   RotateCcw,
   Save,
   ShieldAlert,
@@ -54,13 +57,18 @@ import { useTheme } from '../lib/theme'
 import { COLOR_THEMES } from '../lib/themes'
 import { useToast } from '../components/Toast'
 import GithubConnect from '../components/GithubConnect'
+import { BackgroundImageSettings } from '../components/BackgroundImageSettings'
+import { useBackgroundImage } from '../lib/backgroundImage'
 import { getRepoTarget, setRepoTarget } from '../lib/github'
 import { getLocalPosts, serializePost } from '../lib/posts'
 import { STORAGE_KEYS } from '../lib/config'
 import { clearRememberedPostUnlocks } from '../lib/crypto'
-import { useEditorScrollSync } from '../lib/editorSettings'
+import { useEditorLineNumbers, useEditorScrollPastEnd, useEditorScrollSync } from '../lib/editorSettings'
 import { OfflineSettingsCard } from '../components/OfflineSettingsCard'
 import { OFFLINE } from '../lib/runtime'
+import { syncSettingsNow } from '../lib/settingsSync'
+import { useSettingsSync } from '../lib/useSettingsSync'
+import { settingsSyncConfig } from '../lib/config'
 
 type LocalFontData = { family?: string }
 
@@ -94,6 +102,45 @@ function Section({
       </div>
       {children}
     </section>
+  )
+}
+
+/** 一行开关：左边标题与说明，右边滑动开关。 */
+function SwitchRow({
+  title,
+  desc,
+  checked,
+  onChange,
+}: {
+  title: string
+  desc: string
+  checked: boolean
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-ink-200/80 bg-ink-50/60 p-4 dark:border-white/10 dark:bg-white/[0.025]">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-ink-800 dark:text-ink-100">{title}</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-ink-400 dark:text-ink-500">{desc}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={title}
+        onClick={() => onChange(!checked)}
+        title={checked ? '点击关闭' : '点击开启'}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+          checked ? 'bg-brand-500' : 'bg-ink-300 dark:bg-white/15'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all duration-150 ${
+            checked ? 'left-[1.375rem]' : 'left-0.5'
+          }`}
+        />
+      </button>
+    </div>
   )
 }
 
@@ -270,6 +317,115 @@ function AnimatedBackgroundControls({ pref }: { pref: AnimatedBackgroundPreferen
         </div>
       )}
 
+    </>
+  )
+}
+
+/**
+ * 设置同步（issue #129 / #130）：登录后所有设置自动保存到 GitHub 账号，这里只显示状态，
+ * 没有「保存」按钮——改完即存。保存位置是站点仓库 Discussions 里的专属讨论，不向仓库提交文件。
+ */
+function SettingsSyncControls({ login }: { login: string | null }) {
+  const sync = useSettingsSync()
+  const [manual, setManual] = useState(false)
+  const busy = sync.status === 'syncing' || manual
+
+  const syncNow = async () => {
+    setManual(true)
+    try {
+      await syncSettingsNow()
+    } finally {
+      setManual(false)
+    }
+  }
+
+  if (!login) {
+    return (
+      <p className="text-xs leading-relaxed text-ink-500 dark:text-ink-400">
+        还没有登录：设置已经即时生效，并保存在这台设备的浏览器里。在下面的「GitHub 连接」登录之后，
+        所有设置会自动保存到你的账号，换一台设备登录同一账号即可恢复，不需要任何额外操作。
+      </p>
+    )
+  }
+
+  const time = sync.lastSyncedAt
+    ? new Date(sync.lastSyncedAt).toLocaleTimeString('zh-CN', { hour12: false })
+    : ''
+
+  return (
+    <>
+      <div
+        role="status"
+        data-settings-sync-status={sync.status}
+        className={`flex flex-wrap items-center gap-3 rounded-xl border p-4 ${
+          sync.status === 'error'
+            ? 'border-rose-200 bg-rose-50/60 dark:border-rose-500/20 dark:bg-rose-500/[0.07]'
+            : 'border-ink-200/80 bg-ink-50/60 dark:border-white/10 dark:bg-white/[0.025]'
+        }`}
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/80 dark:bg-white/[0.06]">
+          {busy ? (
+            <Loader2 size={17} className="animate-spin text-brand-600 dark:text-brand-300" />
+          ) : sync.status === 'error' ? (
+            <CloudAlert size={17} className="text-rose-500" />
+          ) : sync.status === 'synced' && !sync.pending ? (
+            <CheckCircle2 size={17} className="text-emerald-500" />
+          ) : (
+            <Cloud size={17} className="text-ink-400" />
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-ink-800 dark:text-ink-100">
+            {busy
+              ? `正在与 @${login} 同步…`
+              : sync.status === 'error'
+                ? '同步失败，稍后会自动重试'
+                : sync.pending
+                  ? '有改动，马上自动保存…'
+                  : sync.status === 'synced'
+                    ? `所有设置已保存到 @${login}`
+                    : `即将与 @${login} 同步`}
+          </p>
+          <p className="mt-0.5 break-words text-xs leading-relaxed text-ink-400 dark:text-ink-500">
+            {sync.status === 'error' && sync.error
+              ? sync.error
+              : time
+                ? `上次同步 ${time}；修改任何设置后会自动保存，无需手动操作。`
+                : '修改任何设置后会自动保存，无需手动操作。'}
+          </p>
+        </div>
+        <button type="button" onClick={() => void syncNow()} disabled={busy} className="btn-outline h-9 shrink-0">
+          <RefreshCw size={14} className={busy ? 'animate-spin' : ''} />
+          立即同步
+        </button>
+      </div>
+
+      <ul className="mt-3 list-disc space-y-1 pl-5 text-xs leading-relaxed text-ink-400">
+        <li>
+          同步范围是这一页上的全部设置：配色主题、明暗模式、字体与字号、背景渐变、固定背景图片的选择、
+          动态背景及各场景参数、编辑器开关与目标仓库。本地背景图片的文件本身只留在所选的那台设备上。
+        </li>
+        <li>
+          保存位置是站点仓库 GitHub Discussions 里的「{settingsSyncConfig.title}」讨论：每个账号一条由本人发表的评论，
+          <strong className="font-medium text-ink-500 dark:text-ink-300">不向仓库提交任何文件</strong>，也不经过待更新队列。
+          {sync.commentUrl && (
+            <>
+              {' '}
+              <a
+                href={sync.commentUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-0.5 text-brand-600 hover:underline dark:text-brand-300"
+              >
+                查看保存的内容
+                <ExternalLink size={11} />
+              </a>
+            </>
+          )}
+        </li>
+        <li>Discussions 是公开的；评论里只有上面这些偏好，不含访问令牌、草稿或任何文章内容。</li>
+        <li>几台设备各自改了不同的设置时，按每一项的修改时间合并，后改的生效，互不覆盖。</li>
+      </ul>
     </>
   )
 }
@@ -489,25 +645,20 @@ function FontPriorityEditor({
 
 export default function SettingsPage() {
   const { isAuthed, ghUser, canPublish, connectGithub, disconnectGithub, logout } = useAuth()
-  const { font, accountSync, setFontSize, resetFont, saveForGithub } = useFont()
-  const {
-    background,
-    accountSync: appearanceAccountSync,
-    setBackground,
-    resetBackground,
-    saveForGithub: saveAppearanceForGithub,
-  } = useBackground()
+  const { font, setFontSize, resetFont } = useFont()
+  const { background, setBackground, resetBackground } = useBackground()
   const animatedBackground = useAnimatedBackground()
+  const backgroundImage = useBackgroundImage()
   const toast = useToast()
   const [editorScrollSync, setEditorScrollSync] = useEditorScrollSync()
+  const [editorLineNumbers, setEditorLineNumbers] = useEditorLineNumbers()
+  const [editorScrollPastEnd, setEditorScrollPastEnd] = useEditorScrollPastEnd()
 
   const [repo, setRepo] = useState(getRepoTarget())
   const [localFonts, setLocalFonts] = useState<string[]>([])
   const [loadingFonts, setLoadingFonts] = useState(false)
-  const [savingFont, setSavingFont] = useState(false)
   const [backgroundColor, setBackgroundColor] = useState(background.color || '#FBFBFD')
   const [backgroundIntensity, setBackgroundIntensity] = useState(background.intensity)
-  const [savingAppearance, setSavingAppearance] = useState(false)
 
   useEffect(() => {
     setBackgroundColor(background.color || '#FBFBFD')
@@ -516,8 +667,18 @@ export default function SettingsPage() {
 
   const saveRepo = () => {
     setRepoTarget(repo)
-    toast('仓库设置已保存到本地', 'success')
+    toast(isAuthed ? '仓库设置已保存，并会自动同步到账号' : '仓库设置已保存到本地', 'success')
   }
+
+  // 目标仓库也会随账号同步：别的设备改了之后，这里的输入框跟着更新。
+  useEffect(() => {
+    const sync = (event: Event) => {
+      const name = (event as CustomEvent<{ name?: string }>).detail?.name
+      if (!name || name === 'repository') setRepo(getRepoTarget())
+    }
+    window.addEventListener('starlog:settings-changed', sync)
+    return () => window.removeEventListener('starlog:settings-changed', sync)
+  }, [])
 
   const loadLocalFonts = async () => {
     if (!window.queryLocalFonts) {
@@ -544,21 +705,6 @@ export default function SettingsPage() {
     }
   }
 
-  const saveFontToGithub = async () => {
-    setSavingFont(true)
-    try {
-      await saveForGithub()
-      toast(`字体与字号偏好已加入待更新队列，统一更新后同步到 @${ghUser?.login}`, 'success', {
-        label: '查看队列',
-        href: '/admin?tab=queue',
-      })
-    } catch (err) {
-      toast(err instanceof Error ? err.message : '保存字体偏好失败', 'error')
-    } finally {
-      setSavingFont(false)
-    }
-  }
-
   const applyBackground = () => {
     try {
       const next = setBackground(backgroundColor, backgroundIntensity)
@@ -567,21 +713,6 @@ export default function SettingsPage() {
       toast(`已应用渐变背景 ${next.color || '系统默认'} · 明显度 ${next.intensity}%`, 'success')
     } catch (err) {
       toast(err instanceof Error ? err.message : '背景颜色格式无效', 'error')
-    }
-  }
-
-  const saveAppearanceToGithub = async () => {
-    setSavingAppearance(true)
-    try {
-      await saveAppearanceForGithub()
-      toast(`外观偏好已加入待更新队列，统一更新后同步到 @${ghUser?.login}`, 'success', {
-        label: '查看队列',
-        href: '/admin?tab=queue',
-      })
-    } catch (err) {
-      toast(err instanceof Error ? err.message : '保存外观偏好失败', 'error')
-    } finally {
-      setSavingAppearance(false)
     }
   }
 
@@ -628,7 +759,7 @@ export default function SettingsPage() {
         <p className="mt-1.5 text-sm text-ink-500">
           {OFFLINE
             ? '个性化设置使用浏览器本地存储与即时更新机制。离线版不联网，因此没有账号同步：偏好只保存在这台设备的这个文件里。'
-            : '个性化设置使用浏览器本地存储与即时更新机制；连接 GitHub 后仍可选择同步偏好至账号。'}
+            : '所有设置即时生效并保存在这台设备上；登录 GitHub 后还会自动保存到你的账号，换一台设备登录即可恢复。'}
           <Link
             to={isAuthed ? '/admin' : '/'}
             className="ml-2 text-brand-600 hover:underline dark:text-brand-300"
@@ -691,7 +822,7 @@ export default function SettingsPage() {
               ))}
             </div>
             <p className="mt-2 text-xs leading-relaxed text-ink-400">
-              会即时缩放文章正文、文章标题、Markdown 标题与 KaTeX 公式，并自动保存到当前浏览器。
+              会即时缩放文章正文、文章标题、Markdown 标题与 KaTeX 公式，并自动保存。
             </p>
           </div>
 
@@ -732,36 +863,13 @@ export default function SettingsPage() {
               恢复默认字体与字号
             </button>
             <span className="text-xs text-ink-400">
-              会同时清空正文与代码字体，回到站点默认字体栈；设置自动保存至当前浏览器
+              会同时清空正文与代码字体，回到站点默认字体栈；设置自动保存
             </span>
           </div>
 
-          {canPublish && ghUser ? (
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-ink-200/70 pt-4 dark:border-white/10">
-              <button
-                type="button"
-                onClick={saveFontToGithub}
-                disabled={savingFont}
-                className="btn-outline h-9"
-              >
-                {savingFont ? <Loader2 size={15} className="animate-spin" /> : <Cloud size={15} />}
-                保存到 GitHub 账号（@{ghUser.login}）
-              </button>
-              <span className="text-xs text-ink-400">
-                {accountSync === 'loading'
-                  ? '正在同步账号字体与字号偏好…'
-                  : accountSync === 'queued'
-                    ? '已加入待更新队列，统一更新后同步到账号'
-                    : accountSync === 'synced'
-                      ? '字体与字号已与 GitHub 账号同步'
-                      : '保存后可在多台设备登录同一账号自动恢复'}
-              </span>
-            </div>
-          ) : (
+          {OFFLINE && (
             <p className="mt-4 border-t border-ink-200/70 pt-4 text-xs leading-relaxed text-ink-400 dark:border-white/10">
-              {OFFLINE
-                ? '离线版只使用本机已安装的字体（不会请求云端字体）；本机没有的字体名会按默认字体栈显示。'
-                : '访客设置已直接生效并保存在本地。登录 GitHub 账号后还可将字体与字号偏好同步至云端。'}
+              离线版只使用本机已安装的字体（不会请求云端字体）；本机没有的字体名会按默认字体栈显示。
             </p>
           )}
         </Section>
@@ -855,100 +963,76 @@ export default function SettingsPage() {
           </div>
         </Section>
 
+        {/* ------------------------------ 固定背景图片（issue #126） ------------------------------ */}
+        <Section
+          title="固定背景图片"
+          desc="把页面背景换成一张固定的图片：可以选仓库里准备好的任意一张，也可以选自己设备上的图片。背景固定在视口上，不随页面滚动。"
+          icon={ImageIcon}
+        >
+          <BackgroundImageSettings />
+        </Section>
+
         {/* ------------------------------ 动态背景 ------------------------------ */}
         <Section
           title="动态背景"
           desc="五种动态场景（樱花、粒子星链、雪花、暴雨、竹林），每种 5 项参数可调，深浅色模式各有一套配色。背景显示在站点内容之下，不影响阅读。"
           icon={CloudRain}
         >
-          <AnimatedBackgroundControls pref={animatedBackground} />
-        </Section>
-
-        {/* ------------------------------ 外观偏好同步 ------------------------------ */}
-        {!OFFLINE && (
-          <Section
-          title="外观偏好同步"
-          desc="把配色主题、明暗模式、背景渐变与动态背景一起保存到 GitHub 账号；在其他设备登录同一账号后会读取并恢复。"
-          icon={Cloud}
-        >
-          {canPublish && ghUser ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={saveAppearanceToGithub}
-                disabled={savingAppearance}
-                className="btn-outline h-9"
-              >
-                {savingAppearance ? <Loader2 size={15} className="animate-spin" /> : <Cloud size={15} />}
-                同步外观到 GitHub（@{ghUser.login}）
-              </button>
-              <span className="text-xs text-ink-400">
-                {appearanceAccountSync === 'loading'
-                  ? '正在恢复账号外观偏好…'
-                  : appearanceAccountSync === 'queued'
-                    ? '已加入待更新队列，统一更新后同步到账号'
-                    : appearanceAccountSync === 'synced'
-                      ? '已与该账号的外观偏好同步'
-                      : '保存后可在其他设备登录同一账号自动恢复'}
-              </span>
-            </div>
-          ) : (
-            <p className="text-xs leading-relaxed text-ink-400">
-              {OFFLINE
-                ? '离线版的外观偏好只保存在本机（这个文件不联网，也就没有账号同步）。'
-                : '访客设置已直接保存在本地。登录并连接 GitHub 账号后，可在这里把外观偏好同步到云端。'}
+          {backgroundImage.url && (
+            <p className="mb-4 rounded-xl border border-amber-200/80 bg-amber-50/60 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/[0.06] dark:text-amber-300">
+              当前启用了固定背景图片，动态背景暂不显示；这里的选择会保留，把「固定背景图片」改回「不使用图片」后即恢复。
             </p>
           )}
-          <p className="mt-3 text-xs leading-relaxed text-ink-400">
-            偏好保存在仓库的 <code className="font-mono">.starlog/settings/background-preferences/</code> 下，每个 GitHub 账号一个文件，不会影响文章与站点其他人的设置。
-          </p>
+          <AnimatedBackgroundControls pref={animatedBackground} />
         </Section>
-        )}
 
         {/* ------------------------------ 编辑器行为 ----------------------------- */}
         <Section
           title="编辑器"
-          desc="调整双栏编辑器的工作方式，设置即时生效并自动保存到当前浏览器。"
+          desc="调整编辑器的工作方式，设置即时生效并自动保存。"
           icon={Columns2}
         >
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-ink-200/80 bg-ink-50/60 p-4 dark:border-white/10 dark:bg-white/[0.025]">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-ink-800 dark:text-ink-100">
-                双栏自动同步滚动
-              </p>
-              <p className="mt-0.5 text-xs leading-relaxed text-ink-400 dark:text-ink-500">
-                开启后，编辑区滚动时预览区会跟随到对应内容位置；关闭后两侧各自独立滚动。
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={editorScrollSync}
-              onClick={() => setEditorScrollSync(!editorScrollSync)}
-              title={editorScrollSync ? '点击关闭自动同步' : '点击开启自动同步'}
-              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                editorScrollSync
-                  ? 'bg-brand-500'
-                  : 'bg-ink-300 dark:bg-white/15'
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all duration-150 ${
-                  editorScrollSync ? 'left-[1.375rem]' : 'left-0.5'
-                }`}
-              />
-            </button>
+          <div className="space-y-2.5">
+            <SwitchRow
+              title="双栏自动同步滚动"
+              desc="开启后，编辑区滚动时预览区会跟随到对应内容位置；关闭后两侧各自独立滚动。"
+              checked={editorScrollSync}
+              onChange={setEditorScrollSync}
+            />
+            <SwitchRow
+              title="显示行号"
+              desc="在编辑区左侧显示每一行的行号，并高亮光标所在的行；自动折行的长行只占一个行号。工具栏右侧始终显示光标所在行、总行数与列。"
+              checked={editorLineNumbers}
+              onChange={setEditorLineNumbers}
+            />
+            <SwitchRow
+              title="可下滑到最后一行置顶"
+              desc="开启后，编辑区可以一直向下滚动，直到最后一行位于编辑区的最上方；双栏同步滚动时预览区同样留出空间。关闭后滚到文末即停。"
+              checked={editorScrollPastEnd}
+              onChange={setEditorScrollPastEnd}
+            />
           </div>
           <p className="mt-2.5 text-xs leading-relaxed text-ink-400">
             全屏编辑时可按 <kbd className="rounded border border-ink-200 px-1 font-mono text-[10px] dark:border-white/15">Esc</kbd> 或点击右上角按钮退出。
           </p>
         </Section>
 
+        {/* ------------------------------ 设置同步（issue #129 / #130） ----------------------------- */}
+        {!OFFLINE && (
+          <Section
+            title="设置同步"
+            desc="登录 GitHub 后，这一页上的所有设置都会自动保存到你的账号，并在其他设备登录同一账号时自动恢复。"
+            icon={Cloud}
+          >
+            <SettingsSyncControls login={isAuthed && ghUser ? ghUser.login : null} />
+          </Section>
+        )}
+
         {/* ------------------------------ GitHub 连接 ----------------------------- */}
         {!OFFLINE && (
           <Section
           title="GitHub 连接"
-          desc="连接后即可在线发表/申请文章、参与审核、上传图片，并同步个人偏好。"
+          desc="连接后即可在线发表/申请文章、参与审核、上传图片，所有设置也会自动同步到账号。"
           icon={Github}
         >
           {canPublish && ghUser ? (
@@ -1039,7 +1123,7 @@ export default function SettingsPage() {
         {/* ------------------------------ 本地数据 ------------------------------- */}
         <Section
           title="本地数据管理"
-          desc="草稿与个性化偏好保存在 localStorage；加密文章的不可导出解锁密钥保存在 IndexedDB。清除站点数据会一并移除。"
+          desc="草稿与个性化偏好保存在 localStorage；加密文章的不可导出解锁密钥、本地背景图片保存在 IndexedDB。清除站点数据会一并移除（已同步到账号的设置重新登录后会自动恢复）。"
           icon={Download}
         >
           <div className="flex flex-wrap gap-2">

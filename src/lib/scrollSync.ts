@@ -78,20 +78,120 @@ export function copyTextareaMirrorStyles(ta: HTMLTextAreaElement, mirror: HTMLEl
   mirror.style.wordBreak = cs.wordBreak || 'normal'
 }
 
+/** 每个镜像层当前对应的逐行文本，供 `syncTextareaLineMirror` 判断哪些行需要改。 */
+const mirrorLineCache = new WeakMap<HTMLElement, string[]>()
+
+/** 空行也要占一行的高度：放一个零宽空格撑出行盒。 */
+const EMPTY_LINE_PLACEHOLDER = '\u200b'
+
 /** 重建 `<textarea>` 行号测量镜像，返回镜像构建时使用的 `clientWidth`。 */
 export function rebuildTextareaLineMirror(
   ta: HTMLTextAreaElement,
   mirror: HTMLElement,
 ): number {
   copyTextareaMirrorStyles(ta, mirror)
-  mirror.innerHTML = ta.value
-    .split('\n')
+  const lines = ta.value.split('\n')
+  mirror.innerHTML = lines
     .map(
       (line, i) =>
         `<div data-l="${i + 1}">${line ? escapeMirrorHtml(line) : '&#8203;'}</div>`,
     )
     .join('')
+  mirrorLineCache.set(mirror, lines)
   return ta.clientWidth
+}
+
+/** 一次改动超过这么多行（整篇粘贴、载入文章）就不逐行修补了，直接整体重建更快。 */
+const MIRROR_PATCH_LIMIT = 400
+
+/**
+ * 让镜像层跟上 `<textarea>` 的当前文本，返回镜像使用的 `clientWidth`。
+ *
+ * 镜像层同时是编辑区的行号栏（issue #127），每次输入之后都要更新，不能再像只做滚动同步时那样
+ * 拖到「下一次滚动」才整体重建。这里只修补真正变化的部分：找出新旧文本首尾相同的行，
+ * 中间那一段原地改写、插入或删除对应的行节点，再把后面各行的行号属性顺延——
+ * 在几千行的长文里敲一个字、回一次车，都只动几个节点，不重排全文。
+ */
+export function syncTextareaLineMirror(
+  ta: HTMLTextAreaElement,
+  mirror: HTMLElement,
+): number {
+  const lines = ta.value.split('\n')
+  const cached = mirrorLineCache.get(mirror)
+  const children = mirror.children
+  if (!cached || children.length !== cached.length) {
+    return rebuildTextareaLineMirror(ta, mirror)
+  }
+
+  // 首尾相同的行不动；[start, oldEnd) → [start, newEnd) 是需要修补的中间段。
+  const shortest = Math.min(cached.length, lines.length)
+  let start = 0
+  while (start < shortest && cached[start] === lines[start]) start++
+  let oldEnd = cached.length
+  let newEnd = lines.length
+  while (oldEnd > start && newEnd > start && cached[oldEnd - 1] === lines[newEnd - 1]) {
+    oldEnd--
+    newEnd--
+  }
+  if (Math.max(oldEnd, newEnd) - start > MIRROR_PATCH_LIMIT) {
+    return rebuildTextareaLineMirror(ta, mirror)
+  }
+
+  copyTextareaMirrorStyles(ta, mirror)
+  const rewritten = Math.min(oldEnd, newEnd) - start
+  for (let i = start; i < start + rewritten; i++) {
+    children[i].textContent = lines[i] || EMPTY_LINE_PLACEHOLDER
+  }
+  if (newEnd > oldEnd) {
+    const fragment = mirror.ownerDocument.createDocumentFragment()
+    for (let i = start + rewritten; i < newEnd; i++) {
+      const line = mirror.ownerDocument.createElement('div')
+      line.setAttribute('data-l', String(i + 1))
+      line.textContent = lines[i] || EMPTY_LINE_PLACEHOLDER
+      fragment.appendChild(line)
+    }
+    mirror.insertBefore(fragment, children[start + rewritten] ?? null)
+  } else {
+    for (let i = oldEnd - 1; i >= start + rewritten; i--) children[i].remove()
+  }
+  if (newEnd !== oldEnd) {
+    // 行数变了：后面的行整体顺延，行号属性跟着改（显示用的行号是 CSS 计数器，不依赖这个属性）。
+    for (let i = newEnd; i < lines.length; i++) children[i].setAttribute('data-l', String(i + 1))
+  }
+  mirrorLineCache.set(mirror, lines)
+  return ta.clientWidth
+}
+
+/** 光标所在的行与列（都从 1 起算）以及全文总行数。 */
+export function caretLineColumn(
+  value: string,
+  offset: number,
+): { line: number; column: number; total: number } {
+  const caret = Math.max(0, Math.min(offset, value.length))
+  let line = 1
+  let lineStart = 0
+  let total = 1
+  for (let i = value.indexOf('\n'); i !== -1; i = value.indexOf('\n', i + 1)) {
+    total += 1
+    if (i < caret) {
+      line += 1
+      lineStart = i + 1
+    }
+  }
+  return { line, column: caret - lineStart + 1, total }
+}
+
+/**
+ * 「可以一直下滑到最后一行位于编辑区最上方」（issue #127）需要的底部留白：
+ * 视口高度减去顶部留白和一行的高度。内容不足一屏时刚好不出现多余的滚动。
+ */
+export function scrollPastEndPadding(
+  clientHeight: number,
+  paddingTop: number,
+  lineHeight: number,
+): number {
+  if (!(clientHeight > 0) || !(lineHeight > 0)) return Math.max(0, paddingTop)
+  return Math.max(Math.max(0, paddingTop), Math.round(clientHeight - paddingTop - lineHeight))
 }
 
 /** 判断元素是否位于未展开的 `<details>` 折叠框内部（处于隐藏态）。 */

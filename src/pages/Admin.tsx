@@ -103,11 +103,6 @@ const QUEUE_KIND_META: Record<
     icon: ImageIcon,
     tone: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
   },
-  'settings-sync': {
-    label: '账号偏好',
-    icon: Settings,
-    tone: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
-  },
   'version-name': {
     label: '版本名称',
     icon: PenLine,
@@ -895,7 +890,7 @@ export default function Admin() {
             <p className="text-xs text-ink-500">
               {OFFLINE
                 ? '离线版不提交仓库：这里只列出本机暂存的图片等待导出内容，它们会随「导出文章包」一起带走。'
-                : '所有需要更新仓库的操作（发布/删除文章、上传图片、发表申请、账号偏好同步）都会先保存在本机，勾选后可一次批量更新，也可以全部更新。'}
+                : '所有需要更新仓库的操作（发布/删除文章、上传图片、发表申请、修改版本名称）都会先保存在本机，勾选后可一次批量更新，也可以全部更新。'}
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -1087,7 +1082,7 @@ export default function Admin() {
           </div>
 
           <p className="mb-16 text-xs leading-relaxed text-ink-400">
-            更新时文件类更改（文章、图片、账号偏好、版本名称）会合并为一次 Git 提交并触发一次部署；发表申请会逐个创建 PR。失败的条目会保留在队列中，可稍后重试。
+            更新时文件类更改（文章、图片、版本名称）会合并为一次 Git 提交并触发一次部署；发表申请会逐个创建 PR。失败的条目会保留在队列中，可稍后重试。
             点击任意一条更新请求（或右侧的「diff」）可查看它相对仓库当前文件的差异。
           </p>
         </div>

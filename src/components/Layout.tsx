@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Github,
@@ -21,13 +21,28 @@ import { installHeaderYield, requestHeaderYieldRefresh } from '../lib/headerYiel
 import { useTheme } from '../lib/theme'
 import { DEFAULT_COLOR_THEME } from '../lib/themes'
 import { useAuth } from '../lib/auth'
-import { AnimatedBackdrop } from './AnimatedBackdrop'
-import { useAnimatedBackground, useAnimatedSceneOverride, getSceneValues } from '../lib/animatedBackground'
+import {
+  getSceneValues,
+  useAnimatedBackground,
+  useAnimatedSceneOverride,
+  type SceneId,
+} from '../lib/animatedBackground'
+import { resolvePageBackground, useBackgroundImage } from '../lib/backgroundImage'
 import { SearchDialog } from './SearchDialog'
 import { OFFLINE } from '../lib/runtime'
 import { countLocalContent } from '../lib/offlineBundle'
 import { ThemePicker } from './ThemePicker'
 import logoVenti from '../assets/logo-venti.jpg'
+import { prefetchPath, scheduleIdlePrefetch } from '../routes'
+import { internalPathFromHref, siteBasePath } from '../lib/routePaths'
+
+/**
+ * 动态背景的渲染器（五个场景的 Canvas 绘制代码，压缩前约 80 KB）只在真的选了某个场景时才加载：
+ * 默认「无」的访客不必为它多下载、多解析一段首屏用不到的代码（issue #128）。
+ */
+const AnimatedBackdrop = lazy(() =>
+  import('./AnimatedBackdrop').then((module) => ({ default: module.AnimatedBackdrop })),
+)
 
 const NAV = [
   { to: '/', label: '首页', end: true },
@@ -344,14 +359,58 @@ function Footer() {
   )
 }
 
-function AnimatedBackdropLayer({ ignoreOverride = false }: { ignoreOverride?: boolean }) {
+/**
+ * 固定背景图片（issue #126）：铺满视口的一张图，上面叠一层页面底色的遮罩保证文字可读。
+ * 图片解码完成后再淡入，避免先露出半张图。
+ */
+function FixedBackgroundImage({ url, dim, blur }: { url: string; dim: number; blur: number }) {
+  const [loadedUrl, setLoadedUrl] = useState('')
+  return (
+    <div className="absolute inset-0" data-background-image>
+      <img
+        key={url}
+        src={url}
+        alt=""
+        decoding="async"
+        draggable={false}
+        onLoad={() => setLoadedUrl(url)}
+        className={`h-full w-full object-cover transition-opacity duration-500 ${
+          loadedUrl === url ? 'opacity-100' : 'opacity-0'
+        }`}
+        // 模糊后边缘会透出底色，略微放大把它推到视口之外。
+        style={blur > 0 ? { filter: `blur(${blur}px)`, transform: 'scale(1.06)' } : undefined}
+      />
+      <div className="site-background-scrim absolute inset-0" style={{ opacity: dim / 100 }} />
+    </div>
+  )
+}
+
+/**
+ * 页面背景的两种「整屏」形态：固定背景图片与动态背景，同一时刻只显示一种
+ * （先后关系见 backgroundImage.ts 的 resolvePageBackground）。
+ * 文章开头的 ::set-background[<id>]（issue #59）在阅读本文时以文章为准；
+ * 回声洞等独占全屏页不理会它，始终用读者自己选择的背景。
+ */
+function BackgroundLayers({ ignoreOverride = false }: { ignoreOverride?: boolean }) {
   const pref = useAnimatedBackground()
-  // 文章开头的 ::set-background[<id>]（issue #59）可在阅读本文时临时强制场景，
-  // 参数仍用读者为该场景保存（或默认）的值；回声洞等独立全屏页始终使用用户自己选择的背景。
   const override = useAnimatedSceneOverride()
-  const scene = ignoreOverride ? pref.scene : (override ?? pref.scene)
-  if (scene === 'none') return null
-  return <AnimatedBackdrop scene={scene} values={getSceneValues(pref, scene)} />
+  const image = useBackgroundImage()
+  const { imageUrl, scene } = resolvePageBackground<SceneId>({
+    articleScene: ignoreOverride ? null : override,
+    userScene: pref.scene,
+    imageUrl: image.url,
+  })
+  return (
+    <>
+      {imageUrl && <FixedBackgroundImage url={imageUrl} dim={image.pref.dim} blur={image.pref.blur} />}
+      {scene !== 'none' && (
+        <Suspense fallback={null}>
+          {/* 参数仍用读者为该场景保存（或默认）的值 */}
+          <AnimatedBackdrop scene={scene} values={getSceneValues(pref, scene)} />
+        </Suspense>
+      )}
+    </>
+  )
 }
 
 /**
@@ -438,6 +497,40 @@ export function Layout() {
   // issue #71：正文滚到页头这一栏下方时先渐变淡掉（只改正文，不碰背景）
   useEffect(() => installHeaderYield(), [])
 
+  // 独占全屏的页面（回声洞）没有页面滚动：告诉样式表不必再为滚动条预留空位（见 index.css 的 scrollbar-gutter）。
+  useEffect(() => {
+    const rootEl = document.documentElement
+    if (isFullscreen) rootEl.dataset.immersive = 'true'
+    else delete rootEl.dataset.immersive
+    return () => {
+      delete rootEl.dataset.immersive
+    }
+  }, [isFullscreen])
+
+  // issue #128：鼠标移到站内链接上 / 手指按下 / 键盘聚焦时，提前取回目标页面的分包；
+  // 首屏空闲后再把文章页取好。这样点下去时页面代码多半已经到了。
+  useEffect(() => {
+    if (OFFLINE) return
+    const base = siteBasePath()
+    const onIntent = (event: Event) => {
+      const target = event.target as Element | null
+      const anchor = target?.closest?.('a[href]') as HTMLAnchorElement | null
+      if (!anchor || anchor.target === '_blank' || anchor.hasAttribute('download')) return
+      const path = internalPathFromHref(anchor.href, base, window.location.origin)
+      if (path) prefetchPath(path)
+    }
+    document.addEventListener('pointerover', onIntent, { passive: true })
+    document.addEventListener('touchstart', onIntent, { passive: true })
+    document.addEventListener('focusin', onIntent)
+    const cancelIdlePrefetch = scheduleIdlePrefetch()
+    return () => {
+      document.removeEventListener('pointerover', onIntent)
+      document.removeEventListener('touchstart', onIntent)
+      document.removeEventListener('focusin', onIntent)
+      cancelIdlePrefetch()
+    }
+  }, [])
+
   useEffect(() => {
     if (hideChrome) return
     const onKey = (e: KeyboardEvent) => {
@@ -466,8 +559,8 @@ export function Layout() {
           style={{ animationDelay: '-4s' }}
         />
         <div className="site-background-hairline absolute inset-x-0 top-0 h-px" />
-        {/* 动态背景（樱花 / 粒子星链 / 雪花 / 暴雨 / 竹林）：回声洞始终沿用用户自己选择的背景 */}
-        <AnimatedBackdropLayer ignoreOverride={isFullscreen} />
+        {/* 固定背景图片 / 动态背景（樱花、粒子星链、雪花、暴雨、竹林）：回声洞始终沿用用户自己选择的背景 */}
+        <BackgroundLayers ignoreOverride={isFullscreen} />
       </div>
 
       {!hideChrome && <Header onSearch={() => setSearchOpen(true)} />}

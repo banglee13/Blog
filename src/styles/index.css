@@ -302,6 +302,21 @@
     /* 字号偏好在根节点统一缩放，因此正文、标题和 KaTeX 公式保持比例。 */
     font-size: var(--site-font-size);
   }
+  /*
+   * 始终为纵向滚动条预留位置（issue #128）。
+   * 「标签」「百宝箱」这类一屏放得下的页面没有滚动条，其余页面有；不预留的话，在它们之间
+   * 跳转时视口宽度会差出一个滚动条，页头和正文整体左右挪动。打开搜索、符号面板时锁定页面滚动
+   * 也是同一个问题。触屏与 macOS 默认的悬浮式滚动条本来就不占位，这条声明对它们没有影响。
+   * 独占全屏的界面（回声洞、全屏编辑）没有页面滚动，不需要那条空位，画面铺满整个窗口——所以排除在外。
+   *
+   * 只对站点自己的页面外壳生效：`starlog-app` 这个类写在 index.html 的 <html> 上。
+   * 不要把它并进上面那条裸的 html 规则——这份样式还会被别处拿去用：VS Code 插件的预览由它生成
+   * （裸的 html / body 规则会原样带进 Webview，那里滚动的是 body，html 再预留一条空位只会让正文平白变窄），
+   * 插件的浏览器对照测试也用它渲染一个参照页。带类名的选择器在这两处都不会命中。
+   */
+  html.starlog-app:not([data-immersive='true']):not([data-editor-fullscreen='true']) {
+    scrollbar-gutter: stable;
+  }
 
   body {
     @apply text-ink-800 antialiased dark:text-ink-200;
@@ -502,6 +517,13 @@
   .site-background-hairline {
     background: linear-gradient(to right, transparent, var(--site-background-tint-secondary), transparent),
       linear-gradient(to right, transparent, var(--site-background-glow-secondary), transparent);
+  }
+  /* 固定背景图片上的遮罩（issue #126）：用当前主题的页面底色，浓度由设置里的滑块决定。 */
+  .site-background-scrim {
+    background-color: var(--site-background);
+  }
+  .dark .site-background-scrim {
+    background-color: var(--site-background-dark);
   }
 }
 
@@ -841,6 +863,56 @@ details[open] .callout-chevron {
 .editor-textarea {
   tab-size: 2;
   line-height: 1.75;
+}
+
+/* ---------- 编辑区行号栏（issue #127） ---------- */
+/*
+ * 镜像层（.editor-mirror）与 textarea 同宽、同字体、同折行，每个逻辑行是一个 div[data-l]。
+ * 行号画在每个 div 的 ::before 上：自动折行的长行只在第一行显示行号，位置永远与文字对齐。
+ * 行号的数字用 CSS 计数器生成，而不是读 data-l：中间插入 / 删除一行时后面的行号由浏览器自己顺延，
+ * 不必为了改数字去逐个触发样式重算。
+ * 镜像层自己是 visibility: hidden（文字不显示），行号与当前行的底色单独设回 visible。
+ * --editor-gutter-width / --editor-text-indent 由 Editor.tsx 按行号位数写在外层容器上。
+ */
+.editor-gutter {
+  width: var(--editor-gutter-width);
+  @apply border-r border-ink-200/70 bg-ink-50/50 dark:border-white/10 dark:bg-white/[0.02];
+}
+.editor-mirror {
+  /* 用 transform 跟随 textarea 滚动；提前告诉浏览器，避免每次滚动都重排。 */
+  will-change: transform;
+}
+.editor-mirror--numbered {
+  counter-reset: editor-line;
+}
+.editor-mirror--numbered > div {
+  position: relative;
+  counter-increment: editor-line;
+}
+.editor-mirror--numbered > div::before {
+  content: counter(editor-line);
+  visibility: visible;
+  position: absolute;
+  top: 0;
+  left: calc(-1 * var(--editor-text-indent));
+  width: var(--editor-gutter-width);
+  box-sizing: border-box;
+  padding-right: 10px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+  @apply text-ink-400 dark:text-ink-500;
+}
+/* 光标所在行：行号加深，正文那一行铺一层很浅的底色（文字仍由下面的 textarea 显示）。 */
+.editor-mirror--numbered > div[data-active] {
+  visibility: visible;
+  color: transparent;
+  background-color: rgb(var(--brand-500) / 0.06);
+}
+.editor-mirror--numbered > div[data-active]::before {
+  @apply font-semibold text-brand-600 dark:text-brand-300;
 }
 
 @media print {

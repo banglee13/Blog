@@ -48,6 +48,20 @@ export default defineConfig(({ mode, command }) => {
     build: {
       target: 'es2020',
       chunkSizeWarningLimit: 1200,
+      rollupOptions: {
+        output: {
+          /**
+           * React 全家桶与 js-yaml 单独成包（issue #128）。
+           * 文章正文打在主包里，每发布一篇文章主包的文件名（hash）就会变，回访的读者要把它整个重新下载；
+           * 这几个依赖占了主包的大半却几乎不变，拆出去之后可以一直命中浏览器缓存。
+           */
+          manualChunks(id: string) {
+            if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler|js-yaml)[\\/]/.test(id)) {
+              return 'vendor'
+            }
+          },
+        },
+      },
     },
   }
 })

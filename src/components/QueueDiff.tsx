@@ -11,7 +11,6 @@ const KIND_LABEL: Record<QueueItem['kind'], string> = {
   'post-delete': '删除文章',
   'post-pr': '发表申请',
   'image-upload': '上传图片',
-  'settings-sync': '账号偏好',
   'version-name': '版本名称',
 }
 
@@ -24,7 +23,7 @@ function isNotFound(error: unknown) {
 
 /** 队列条目对应的仓库文件路径。 */
 export function queueItemPath(item: QueueItem): string {
-  if (item.kind === 'settings-sync' || item.kind === 'image-upload') return item.target
+  if (item.kind === 'image-upload') return item.target
   const postsDir = getRepoTarget().postsDir
   if (item.kind === 'version-name') return `${postsDir}/${item.target}.versions.json`
   return `${postsDir}/${item.target}.md`
@@ -38,8 +37,6 @@ export function queueItemNextText(item: QueueItem, currentText: string): string 
       return item.markdown ?? ''
     case 'post-delete':
       return ''
-    case 'settings-sync':
-      return item.text ?? ''
     case 'version-name': {
       let current: Record<string, string> = {}
       try {

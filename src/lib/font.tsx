@@ -2,10 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react'
 import { STORAGE_KEYS } from './config'
 import { readPersonalSetting, writePersonalSetting } from './settingsStore'
-import { fetchGithubFontPreference, buildFontPreferenceFile, fontSettingsPath } from './github'
 import { OFFLINE, hasNetwork } from './runtime'
-import { enqueueSettingsSync, getUpdateQueue } from './updateQueue'
-import { useAuth } from './auth'
 import { MONO_FALLBACK, SANS_FALLBACK, SERIF_FALLBACK, buildFontStack, quoteFontFamily } from './fontStacks'
 
 export type FontSource = 'default' | 'local' | 'cloud'
@@ -47,7 +44,6 @@ export interface FontPreference {
 interface FontCtx {
   font: FontPreference
   status: FontStatus
-  accountSync: 'idle' | 'loading' | 'synced' | 'queued' | 'error'
   /** 设置完整的字体优先级列表；target 省略时为正文 */
   setFonts: (families: string[], target?: FontTarget) => Promise<FontPreference>
   /** 添加一个字体到优先级列表末尾（若已存在则移至末尾） */
@@ -62,7 +58,6 @@ interface FontCtx {
   setFontSize: (sizePercent: number) => FontPreference
   /** 同时清空正文与代码字体、并把字号恢复 100% */
   resetFont: () => void
-  saveForGithub: () => Promise<void>
 }
 
 const DEFAULT_FONT: FontPreference = {
@@ -76,7 +71,6 @@ const cloudStyles = new Map<string, HTMLStyleElement>()
 const Ctx = createContext<FontCtx>({
   font: DEFAULT_FONT,
   status: 'idle',
-  accountSync: 'idle',
   setFonts: async () => DEFAULT_FONT,
   addFont: async () => DEFAULT_FONT,
   removeFont: async () => DEFAULT_FONT,
@@ -84,7 +78,6 @@ const Ctx = createContext<FontCtx>({
   setFont: async () => DEFAULT_FONT,
   setFontSize: () => DEFAULT_FONT,
   resetFont: () => {},
-  saveForGithub: async () => {},
 })
 
 export function normalizeFamily(value: string): string {
@@ -96,7 +89,7 @@ export function normalizeFamily(value: string): string {
   return family
 }
 
-/** 把 `,` / `，` 分隔的字符串拆成字体名数组（账号偏好文件里的写法）。 */
+/** 把 `,` / `，` 分隔的字符串拆成字体名数组。 */
 export function splitFamilies(value: string | undefined | null): string[] {
   if (!value) return []
   return value
@@ -217,21 +210,6 @@ function readLocal(): FontPreference {
   return DEFAULT_FONT
 }
 
-function readAccountCache(): Record<string, FontPreference> {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS.fontAccounts) || '{}')
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function writeAccountCache(login: string, preference: FontPreference) {
-  const cache = readAccountCache()
-  cache[login] = preference
-  localStorage.setItem(STORAGE_KEYS.fontAccounts, JSON.stringify(cache))
-}
-
 export function localFontLikelyExists(family: string): boolean {
   if (typeof document === 'undefined') return false
   const canvas = document.createElement('canvas')
@@ -325,12 +303,9 @@ export function warmFontFamilies(families: string[]): void {
 }
 
 export function FontProvider({ children }: { children: ReactNode }) {
-  const { ghUser, canPublish, loading: authLoading } = useAuth()
   const [font, setFontState] = useState<FontPreference>(readLocal)
   const fontRef = useRef(font)
   const [status, setStatus] = useState<FontStatus>('idle')
-  const [accountSync, setAccountSync] = useState<FontCtx['accountSync']>('idle')
-  const accountRef = useRef('')
 
   const commit = useCallback((candidate: FontPreference, nextStatus?: FontStatus) => {
     const next = normalizePreference(candidate)
@@ -417,33 +392,19 @@ export function FontProvider({ children }: { children: ReactNode }) {
     [commit],
   )
 
-  /** 一次性套用（本地账号缓存 / GitHub 上）保存下来的整套偏好。 */
-  const applyRestored = useCallback(
-    async (restored: {
-      families?: string[]
-      monoFamilies?: string[]
-      sizePercent?: number
-    }): Promise<FontPreference> => {
-      const families = normalizeFamilies(restored.families ?? [])
-      const monoFamilies = normalizeFamilies(restored.monoFamilies ?? [])
-      warmCloudFonts([...families, ...monoFamilies])
-      return commit({
-        families,
-        monoFamilies,
-        sizePercent: normalizeFontSize(restored.sizePercent),
-        updatedAt: Date.now(),
-      })
-    },
-    [commit, warmCloudFonts],
-  )
-
-  // Keep settings in other tabs and views in sync.
+  // 其他视图、其他标签页的修改，以及设置同步从账号取回的新值，都立即生效。
+  // 取回来的字体这台设备上不一定装了：与读者自己添加字体时一样，在后台预热云端版本。
   useEffect(() => {
     const sync = () => {
       const next = readLocal()
+      const previous = fontRef.current
       fontRef.current = next
       applyToDocument(next)
       setFontState(next)
+      const added = [...next.families, ...next.monoFamilies].filter(
+        (family) => !previous.families.includes(family) && !previous.monoFamilies.includes(family),
+      )
+      if (added.length > 0) warmFontFamilies(added)
     }
     window.addEventListener('starlog:settings-changed', sync)
     window.addEventListener('storage', sync)
@@ -453,82 +414,22 @@ export function FontProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // 启动时为已保存的自定义字体预热云端版本：本机没装的字体刷新页面后也照样生效
+  // （只在读者自己添加字体的那一刻请求一次的话，下次打开页面就只剩回退字体了）。
+  useEffect(() => {
+    const saved = [...fontRef.current.families, ...fontRef.current.monoFamilies]
+    if (saved.length > 0) warmFontFamilies(saved)
+  }, [])
+
   useEffect(() => {
     fontRef.current = font
     applyToDocument(font)
   }, [font])
 
-  useEffect(() => {
-    if (authLoading || !canPublish || !ghUser) {
-      accountRef.current = ''
-      if (!authLoading) setAccountSync('idle')
-      return
-    }
-
-    const login = ghUser.login
-    if (accountRef.current === login) return
-    accountRef.current = login
-    let active = true
-    setAccountSync('loading')
-
-    const restore = async () => {
-      try {
-        const cached = readAccountCache()[login]
-        if (cached && (Array.isArray(cached.families) || Array.isArray(cached.monoFamilies))) {
-          await applyRestored(cached)
-        }
-
-        // 有尚未更新到仓库的偏好更改时，不用旧的远程版本覆盖本地/队列中的新设置。
-        const hasPending = getUpdateQueue().some(
-          (item) => item.kind === 'settings-sync' && item.target === fontSettingsPath(login),
-        )
-        if (hasPending) {
-          if (active) setAccountSync('queued')
-          return
-        }
-
-        const remote = await fetchGithubFontPreference(login)
-        if (!active) return
-        if (remote) {
-          const restored = await applyRestored({
-            families: splitFamilies(remote.family),
-            monoFamilies: splitFamilies(remote.monoFamily),
-            sizePercent: remote.sizePercent,
-          })
-          if (!active) return
-          writeAccountCache(login, restored)
-        }
-        setAccountSync('synced')
-      } catch {
-        if (active) setAccountSync('error')
-      }
-    }
-
-    void restore()
-    return () => {
-      active = false
-    }
-  }, [authLoading, canPublish, ghUser, applyRestored])
-
-  const saveForGithub = useCallback(async () => {
-    if (!canPublish || !ghUser) throw new Error('请先登录并连接具备 Contents 写入权限的 GitHub 账号')
-    // 更新仓库的操作先加入待更新队列，由内容管理统一更新。
-    const file = buildFontPreferenceFile(ghUser.login, {
-      family: font.families.join(', '),
-      monoFamily: font.monoFamilies.join(', '),
-      sizePercent: font.sizePercent,
-      updatedAt: font.updatedAt || Date.now(),
-    })
-    enqueueSettingsSync(file.path, `同步 @${ghUser.login} 的字体与字号偏好`, file.text)
-    writeAccountCache(ghUser.login, font)
-    setAccountSync('queued')
-  }, [canPublish, ghUser, font])
-
   const value = useMemo(
     () => ({
       font,
       status,
-      accountSync,
       setFonts,
       addFont,
       removeFont,
@@ -536,12 +437,10 @@ export function FontProvider({ children }: { children: ReactNode }) {
       setFont,
       setFontSize,
       resetFont,
-      saveForGithub,
     }),
     [
       font,
       status,
-      accountSync,
       setFonts,
       addFont,
       removeFont,
@@ -549,7 +448,6 @@ export function FontProvider({ children }: { children: ReactNode }) {
       setFont,
       setFontSize,
       resetFont,
-      saveForGithub,
     ],
   )
 

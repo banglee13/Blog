@@ -1,7 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { STORAGE_KEYS } from './config'
-import { readPersonalSetting, writePersonalSetting } from './settingsStore'
+import {
+  readPersonalSetting,
+  readStoredThemeMode,
+  THEME_MODE_SETTING,
+  writePersonalSetting,
+  writeThemeMode,
+} from './settingsStore'
 import {
   applyColorTheme,
   DEFAULT_COLOR_THEME,
@@ -44,14 +49,15 @@ const Ctx = createContext<ThemeCtx>({
   setColorTheme: () => {},
 })
 
+/**
+ * 当前的明暗模式：读者选过就用选的；没选过时按系统明暗显示。
+ * 「没选过」不会被写进存储——只有读者主动切换才算一次设置（见 setMode / setTheme），
+ * 这样登录后同步设置时，不会把「系统恰好是深色」当成读者的选择推送到账号、再带到别的设备上。
+ */
 function readMode(): ThemeMode {
   if (typeof window === 'undefined') return 'light'
-  try {
-    const stored = localStorage.getItem(STORAGE_KEYS.theme)
-    if (stored === 'dark' || stored === 'light' || stored === 'system') return stored
-  } catch {
-    // 隐私模式下 localStorage 可能不可用
-  }
+  const stored = readStoredThemeMode()
+  if (stored) return stored
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
@@ -119,19 +125,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     meta.setAttribute('content', surface || (theme === 'dark' ? '#0d1017' : '#fbfbfd'))
   }, [theme, colorTheme])
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.theme, mode)
-    } catch {
-      // 忽略存储失败（无痕模式等）
-    }
-  }, [mode])
-
-  // 设置页 / 页头色卡 / 其它标签页的修改都立即生效
+  // 设置页 / 页头色卡 / 其它标签页的修改、以及设置同步取回的新值，都立即生效
   useEffect(() => {
     const sync = (event?: Event) => {
       const name = (event as CustomEvent<{ name?: string }> | undefined)?.detail?.name
       if (!name || name === COLOR_THEME_SETTING) setColorThemeState(readColorTheme())
+      if (!name || name === THEME_MODE_SETTING) {
+        const stored = readStoredThemeMode()
+        if (stored) setModeState(stored)
+      }
     }
     window.addEventListener('starlog:settings-changed', sync)
     window.addEventListener('storage', sync)
@@ -148,7 +150,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setColorThemeState(next)
   }, [])
 
-  const setMode = useCallback((next: ThemeMode) => setModeState(next), [])
+  const setMode = useCallback((next: ThemeMode) => {
+    setModeState(next)
+    writeThemeMode(next)
+  }, [])
 
   const setTheme = useCallback((t: Theme) => {
     // 使用 View Transition 让明暗切换更顺滑（不支持的浏览器直接切换）
@@ -158,6 +163,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     } else {
       setModeState(t)
     }
+    writeThemeMode(t)
   }, [])
 
   const value = useMemo(

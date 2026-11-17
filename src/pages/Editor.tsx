@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { Archive, 
   AlertCircle,
@@ -46,9 +46,13 @@ import { useAuth } from '../lib/auth'
 import { requestHeaderYieldRefresh } from '../lib/headerYield'
 import {
   type BidirectionalScrollMapper,
+  caretLineColumn,
   collectScrollSyncAnchors,
+  copyTextareaMirrorStyles,
   createBidirectionalScrollMapper,
   rebuildTextareaLineMirror,
+  scrollPastEndPadding,
+  syncTextareaLineMirror,
 } from '../lib/scrollSync'
 import { decryptPost, encryptPostMarkdown, restorePostUnlock } from '../lib/crypto'
 import { checkUserRepoPermissions } from '../lib/github'
@@ -85,7 +89,7 @@ import { focusWithoutScroll, restoreCaret } from '../lib/caret'
 import { latexSymbolInsert, type LatexSymbol } from '../lib/latexSymbols'
 import { handleEditorKey, insertBlock, toggleLinePrefix, toggleWrap } from '../lib/editor'
 import type { EditAction } from '../lib/editor'
-import { useEditorScrollSync } from '../lib/editorSettings'
+import { useEditorLineNumbers, useEditorScrollPastEnd, useEditorScrollSync } from '../lib/editorSettings'
 import { useRepoTarget } from '../lib/useRepoTarget'
 import type { Post } from '../lib/types'
 
@@ -204,6 +208,8 @@ export default function Editor() {
   const [metaOpen, setMetaOpen] = useState(!existing)
   const [fullscreen, setFullscreen] = useState(false)
   const [scrollSync] = useEditorScrollSync()
+  const [lineNumbers] = useEditorLineNumbers()
+  const [scrollPastEnd] = useEditorScrollPastEnd()
   const [dirty, setDirty] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(existing?.savedAt ?? null)
   const [publishing, setPublishing] = useState(false)
@@ -987,6 +993,100 @@ export default function Editor() {
     expectedScrollEchoRef.current[side] = null
   }, [])
 
+  /* ------------------------ 行号栏与「末行置顶」（issue #127） ------------------------
+   * 行号：上面那个镜像层与 textarea 同宽、同字体、同折行，每个逻辑行是一个 div。行号画在
+   * 每个 div 的 ::before 上（见 index.css 的 .editor-mirror--numbered），所以自动折行的长行
+   * 只在它的第一行显示行号，不需要另外测量；镜像层用 transform 跟着 textarea 的滚动走。
+   * 末行置顶：给 textarea 加一段「视口高度 − 一行」的底部留白，最后一行就能滚到编辑区最上方；
+   * 双栏同步滚动时预览区末尾也留出对应的空间，两边一直到文末都能对齐同一行。
+   * 光标位置、当前行高亮都直接改 DOM，不触发整个编辑器重新渲染。
+   * ------------------------------------------------------------------------------ */
+  const caretStatusRef = useRef<HTMLSpanElement>(null)
+  const previewSpacerRef = useRef<HTMLDivElement>(null)
+  const activeLineRef = useRef<Element | null>(null)
+  const lineDigits = useMemo(() => {
+    let lines = 1
+    for (let i = content.indexOf('\n'); i !== -1; i = content.indexOf('\n', i + 1)) lines += 1
+    return Math.max(2, String(lines).length)
+  }, [content])
+  /** 行号栏宽度与正文起始位置（px）：编辑区字号固定为 14px，按位数加宽。 */
+  const gutterWidth = lineDigits * 8 + 22
+  const textIndent = gutterWidth + 12
+
+  const syncGutterScroll = useCallback(() => {
+    const ta = textareaRef.current
+    const mirror = mirrorRef.current
+    if (!ta || !mirror) return
+    mirror.style.transform = `translateY(${-ta.scrollTop}px)`
+  }, [])
+
+  const refreshCaretStatus = useCallback(() => {
+    const ta = textareaRef.current
+    if (!ta) return
+    const offset = ta.selectionDirection === 'backward' ? ta.selectionStart : ta.selectionEnd
+    const { line, column, total } = caretLineColumn(ta.value, offset)
+    const status = caretStatusRef.current
+    if (status) status.textContent = `行 ${line}/${total} · 列 ${column}`
+    const next = mirrorRef.current?.children[line - 1] ?? null
+    if (activeLineRef.current !== next) {
+      activeLineRef.current?.removeAttribute('data-active')
+      activeLineRef.current = next
+    }
+    if (next && !next.hasAttribute('data-active')) next.setAttribute('data-active', '')
+  }, [])
+
+  const refreshEditorMetrics = useCallback(() => {
+    const ta = textareaRef.current
+    if (!ta) return
+    const style = typeof window.getComputedStyle === 'function' ? window.getComputedStyle(ta) : null
+    const paddingTop = parseFloat(style?.paddingTop ?? '') || 20
+    const lineHeight = parseFloat(style?.lineHeight ?? '') || 24.5
+    const bottom = `${scrollPastEnd ? scrollPastEndPadding(ta.clientHeight, paddingTop, lineHeight) : paddingTop}px`
+    if (ta.style.paddingBottom !== bottom) {
+      ta.style.paddingBottom = bottom
+      anchorsDirtyRef.current = true
+    }
+    // 镜像层的宽度、留白与字体跟着 textarea 走（窗口缩放、进出全屏、行号栏变宽都会改它们）。
+    const mirror = mirrorRef.current
+    if (mirror) copyTextareaMirrorStyles(ta, mirror)
+    // 预览区：末尾留出「视口高度 − 上下留白 − 一行」，最后一个内容块也能滚到最上方。
+    const spacer = previewSpacerRef.current
+    const pv = previewRef.current
+    if (spacer && pv) {
+      const height = `${Math.max(0, Math.round(pv.clientHeight - paddingTop * 2 - lineHeight))}px`
+      if (spacer.style.height !== height) {
+        spacer.style.height = height
+        anchorsDirtyRef.current = true
+      }
+    }
+    syncGutterScroll()
+  }, [scrollPastEnd, syncGutterScroll])
+
+  // 文本变了就立刻让行号栏跟上：放在 layout effect 里，行号不会比文字晚一帧出现。
+  useLayoutEffect(() => {
+    const ta = textareaRef.current
+    const mirror = mirrorRef.current
+    if (!ta || !mirror) return
+    mirrorBuiltWidthRef.current = syncTextareaLineMirror(ta, mirror)
+    mirrorBuiltTextRef.current = ta.value
+    refreshCaretStatus()
+    syncGutterScroll()
+  }, [content, view, fullscreen, unlocked, lineNumbers, lineDigits, refreshCaretStatus, syncGutterScroll])
+
+  // 尺寸变化（窗口缩放、进出全屏、切换视图）后重算底部留白，并让镜像层跟上 textarea 的宽度。
+  useEffect(() => {
+    refreshEditorMetrics()
+    const observer =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => refreshEditorMetrics()) : null
+    if (textareaRef.current) observer?.observe(textareaRef.current)
+    if (previewRef.current) observer?.observe(previewRef.current)
+    window.addEventListener('resize', refreshEditorMetrics)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', refreshEditorMetrics)
+    }
+  }, [view, fullscreen, unlocked, scrollSync, lineNumbers, lineDigits, refreshEditorMetrics])
+
   const applyProgrammaticScroll = useCallback(
     (side: 'editor' | 'preview', el: HTMLElement, nextTop: number) => {
       const maxTop = Math.max(0, el.scrollHeight - el.clientHeight)
@@ -1029,6 +1129,8 @@ export default function Editor() {
     if (needMirrorRebuild) {
       mirrorBuiltWidthRef.current = rebuildTextareaLineMirror(ta, mirror)
       mirrorBuiltTextRef.current = ta.value
+      // 整体重建会换掉每一行的节点，当前行的高亮要重新标上。
+      refreshCaretStatus()
     }
 
     const anchors = collectScrollSyncAnchors(ta, mirror, pv)
@@ -1049,7 +1151,7 @@ export default function Editor() {
     }
     anchorsDirtyRef.current = false
     return mapper
-  }, [])
+  }, [refreshCaretStatus])
 
   const syncFromDriver = useCallback(
     (driver: 'editor' | 'preview') => {
@@ -1090,6 +1192,18 @@ export default function Editor() {
       if (performance.now() <= echo.until && Math.abs(pv.scrollTop - echo.top) <= 2) {
         return
       }
+    }
+    // 预览区「自己动了一下」：正在编辑区打字 / 滚动时，预览重新渲染后高度变了，浏览器会顺手调整它的
+    // 滚动位置（内容变短被夹到底、滚动锚定）并派发 scroll。这不是读者在滚预览区——如果照常让它反过来
+    // 驱动编辑区，编辑区会被拽到别的位置（在文末输入时，会从「光标在底部」跳成「末行置顶」）。
+    // 判断依据：上次建立映射之后预览区的尺寸变过，而最近一次操作发生在编辑区。此时改为让预览区重新对齐编辑区。
+    const cached = cachedMapperRef.current
+    const previewResized =
+      !!cached && (cached.pvScrollHeight !== pv.scrollHeight || cached.pvClientHeight !== pv.clientHeight)
+    if (previewResized && scrollDriverRef.current === 'editor') {
+      anchorsDirtyRef.current = true
+      syncFromDriver('editor')
+      return
     }
     scrollDriverRef.current = 'preview'
     syncFromDriver('preview')
@@ -1574,6 +1688,15 @@ export default function Editor() {
             />
 
             <div className="ml-auto flex items-center gap-3 pr-2 text-xs text-ink-400">
+              {/* 光标所在行 / 总行数 · 列（issue #127）；内容由 refreshCaretStatus 直接写入，不触发重渲染。 */}
+              {view !== 'preview' && (
+                <span
+                  ref={caretStatusRef}
+                  data-editor-caret-status
+                  title="光标所在行 / 总行数 · 列"
+                  className="whitespace-nowrap tabular-nums"
+                />
+              )}
               <span className="hidden sm:inline">
                 {words} 字 · 约 {readingMinutes} 分钟
               </span>
@@ -1601,7 +1724,19 @@ export default function Editor() {
             style={fullscreen ? undefined : { height: 'min(68vh, 44rem)' }}
           >
             {view !== 'preview' && (
-              <div className="relative min-h-0 overflow-hidden">
+              <div
+                className="relative min-h-0 overflow-hidden"
+                style={
+                  lineNumbers
+                    ? ({
+                        '--editor-gutter-width': `${gutterWidth}px`,
+                        '--editor-text-indent': `${textIndent}px`,
+                      } as React.CSSProperties)
+                    : undefined
+                }
+              >
+                {/* 行号栏的底色与分隔线（行号本身画在下面的镜像层上） */}
+                {lineNumbers && <div aria-hidden="true" className="editor-gutter pointer-events-none absolute inset-y-0 left-0" />}
                 <textarea
                   ref={textareaRef}
                   value={content}
@@ -1613,22 +1748,34 @@ export default function Editor() {
                     markScrollDriver('editor')
                     onKeyDown(e)
                   }}
+                  onKeyUp={refreshCaretStatus}
+                  onClick={refreshCaretStatus}
+                  onSelect={refreshCaretStatus}
+                  onFocus={refreshCaretStatus}
                   onWheel={() => markScrollDriver('editor')}
                   onPointerDown={() => markScrollDriver('editor')}
                   onTouchStart={() => markScrollDriver('editor')}
-                  onScroll={handleEditorScroll}
+                  onScroll={() => {
+                    syncGutterScroll()
+                    handleEditorScroll()
+                  }}
                   spellCheck={false}
                   placeholder="在这里用 Markdown 写作…"
-                  className="editor-textarea h-full w-full resize-none bg-transparent p-5 font-mono text-[14px] text-ink-800 outline-none placeholder:text-ink-400 dark:text-ink-100"
+                  style={lineNumbers ? { paddingLeft: textIndent } : undefined}
+                  className="editor-textarea relative h-full w-full resize-none bg-transparent p-5 font-mono text-[14px] text-ink-800 outline-none placeholder:text-ink-400 dark:text-ink-100"
                 />
-                {/* 滚动同步用的隐藏镜像层：与 textarea 同字体同宽度，用于测量每行的像素位置。 */}
-                {view === 'split' && scrollSync && (
-                  <div
-                    ref={mirrorRef}
-                    aria-hidden="true"
-                    className="editor-textarea invisible absolute left-0 top-0 w-0 whitespace-pre-wrap break-words p-5 font-mono text-[14px] pointer-events-none"
-                  />
-                )}
+                {/*
+                  镜像层：与 textarea 同字体、同宽度、同折行，每个逻辑行一个 div。
+                  它有两个用途——给双栏滚动同步测量每一行的像素位置，以及充当行号栏（issue #127）。
+                  文字本身不可见，只有行号（::before）和当前行的浅色底显示出来。
+                */}
+                <div
+                  ref={mirrorRef}
+                  aria-hidden="true"
+                  className={`editor-textarea editor-mirror invisible absolute left-0 top-0 w-0 whitespace-pre-wrap break-words p-5 font-mono text-[14px] pointer-events-none ${
+                    lineNumbers ? 'editor-mirror--numbered' : ''
+                  }`}
+                />
               </div>
             )}
 
@@ -1658,6 +1805,10 @@ export default function Editor() {
                   sourceLineMarkers={view === 'split'}
                   onContentChange={handlePreviewContentChange}
                 />
+                {/* 双栏同步滚动：编辑区能把最后一行滚到最上方，预览区末尾留出对应的空间才能一直对齐到文末。 */}
+                {view === 'split' && scrollSync && scrollPastEnd && (
+                  <div ref={previewSpacerRef} aria-hidden="true" data-scroll-past-end />
+                )}
               </div>
             )}
           </div>

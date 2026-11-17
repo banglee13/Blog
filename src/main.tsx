@@ -12,6 +12,7 @@ import { BackgroundProvider } from './lib/background'
 import { AuthProvider } from './lib/auth'
 import { ToastProvider } from './components/Toast'
 import { StorageGuard } from './components/StorageGuard'
+import { SettingsSyncBridge } from './components/SettingsSyncBridge'
 import { initOfflineStorage } from './lib/offlineStorage'
 import { OFFLINE } from './lib/runtime'
 import './styles/index.css'
@@ -22,6 +23,8 @@ function Tree() {
   return (
     <ThemeProvider>
       <AuthProvider>
+        {/* 登录后把所有个人设置自动保存到账号、在其他设备恢复（issue #129 / #130） */}
+        <SettingsSyncBridge />
         <FontProvider>
           <BackgroundProvider>
             <ToastProvider>

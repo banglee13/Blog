@@ -82,6 +82,18 @@ export const echoCaveConfig = {
   title: '回声洞',
 }
 
+/**
+ * 设置同步（issue #129 / #130）：登录后，个人设置自动保存到 GitHub Discussions 里的一个专属讨论，
+ * 每个账号一条由本人发表的评论；不向仓库提交任何文件。实现见 src/lib/settingsSync.ts。
+ * 讨论固定建在站点自己的仓库（上面的 githubConfig）里，不受设置页「目标仓库」覆盖的影响。
+ */
+export const settingsSyncConfig = {
+  /** GitHub Discussions 中用于保存设置的分类。 */
+  category: 'General',
+  /** 设置同步专属讨论的标题（讨论不存在时由第一个同步的账号自动创建）。 */
+  title: '设置同步',
+}
+
 export const oauthConfig = {
   /**
    * OAuth App 的 Client ID。
@@ -117,11 +129,13 @@ export const offlineConfig = {
 export const STORAGE_KEYS = {
   theme: 'starlog:theme',
   font: 'starlog:font',
-  fontAccounts: 'starlog:font-accounts',
   background: 'starlog:background',
-  backgroundAccounts: 'starlog:background-accounts',
   /** 集中保存个人偏好，使用 localStorage + 事件更新。 */
   personalSettings: 'starlog:personal-settings',
+  /** 每项个人偏好最后一次修改的时间，设置同步据此合并多台设备的改动。 */
+  settingTimes: 'starlog:settings-times',
+  /** 设置同步在这台设备上的状态（同步到哪个账号、对应哪条评论、上次同步时间）。 */
+  settingsSync: 'starlog:settings-sync',
   session: 'starlog:session',
   /** GitHub OAuth 授权拿到的访问令牌（仅存于浏览器本地） */
   token: 'starlog:gh-token',

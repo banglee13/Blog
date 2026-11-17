@@ -2,19 +2,22 @@ import { Suspense, lazy } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { Layout } from './components/Layout'
 import Home from './pages/Home'
+// 这几个页面各自只有一两 KB：直接进主包，页签之间跳转不必再等一次分包请求（issue #128）。
+import Archive from './pages/Archive'
+import TagsPage from './pages/TagsPage'
+import Toolbox from './pages/Toolbox'
+import NotFound from './pages/NotFound'
+import { routeLoaders } from './routes'
 
-const PostPage = lazy(() => import('./pages/PostPage'))
-const Archive = lazy(() => import('./pages/Archive'))
-const TagsPage = lazy(() => import('./pages/TagsPage'))
-const Toolbox = lazy(() => import('./pages/Toolbox'))
-const EchoCave = lazy(() => import('./pages/EchoCave'))
-const GenshinData = lazy(() => import('./pages/GenshinData'))
-const About = lazy(() => import('./pages/About'))
-const Login = lazy(() => import('./pages/Login'))
-const Admin = lazy(() => import('./pages/Admin'))
-const Editor = lazy(() => import('./pages/Editor'))
-const SettingsPage = lazy(() => import('./pages/SettingsPage'))
-const NotFound = lazy(() => import('./pages/NotFound'))
+// 较重的页面按需加载；同一批 loader 也用于预取（见 src/routes.ts）。
+const PostPage = lazy(routeLoaders.post)
+const EchoCave = lazy(routeLoaders.echo)
+const GenshinData = lazy(routeLoaders.genshin)
+const About = lazy(routeLoaders.about)
+const Login = lazy(routeLoaders.login)
+const Admin = lazy(routeLoaders.admin)
+const Editor = lazy(routeLoaders.editor)
+const SettingsPage = lazy(routeLoaders.settings)
 
 function Loading() {
   return (

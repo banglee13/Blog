@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 
@@ -10,6 +10,41 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '..')
 const requireExt = createRequire(join(root, 'vscode_extensions/v1/package.json'))
 const { JSDOM } = requireExt('jsdom')
+
+/**
+ * 整站测试包（esbuild）里模拟 Vite 的 `?raw` 导入：
+ * - `/content/about.md?raw` 这种以站点根为基准的写法，和 `../data/x.json?raw` 这种相对写法都要能解析
+ *   （旧写法一律拼到仓库根目录下，相对路径会被解析到仓库之外，整包直接构建失败）；
+ * - 一律按纯文本加载：`.json`、`.gz.base64` 这类扩展名 esbuild 默认不会当成文本；
+ * - 原神图鉴的数据快照有十几 MB，与这里的测试无关，换成空串，避免每次打包都把它们卷进来。
+ */
+const viteRawPlugin = {
+  name: 'vite-raw',
+  setup(b) {
+    b.onResolve({ filter: /\?raw$/ }, (args) => {
+      const spec = args.path.replace(/\?raw$/, '')
+      return {
+        path: spec.startsWith('/') ? join(root, spec.slice(1)) : resolve(args.resolveDir, spec),
+        namespace: 'vite-raw',
+      }
+    })
+    b.onLoad({ filter: /.*/, namespace: 'vite-raw' }, (args) => ({
+      contents: args.path.includes(`${sep}src${sep}data${sep}genshin${sep}`) ? '' : readFileSync(args.path, 'utf8'),
+      loader: 'text',
+    }))
+  },
+}
+
+/** 整站测试包用到的资源加载方式：图片转 data URL，样式表（页面级 CSS 导入）在 jsdom 里用不上，置空。 */
+const siteBundleLoaders = {
+  '.jpg': 'dataurl',
+  '.jpeg': 'dataurl',
+  '.png': 'dataurl',
+  '.webp': 'dataurl',
+  '.svg': 'dataurl',
+  '.md': 'text',
+  '.css': 'empty',
+}
 
 async function importTsModule(entryPath) {
   const result = await build({
@@ -972,22 +1007,8 @@ test('百宝箱与全屏极简回声洞（#93）：顶栏页签、用户背景�
     format: 'esm',
     platform: 'browser',
     target: 'es2022',
-    plugins: [
-      {
-        name: 'vite-raw-md',
-        setup(b) {
-          b.onResolve({ filter: /\?raw$/ }, (args) => ({
-            path: join(root, args.path.replace(/^\//, '').replace(/\?raw$/, '')),
-          }))
-        },
-      },
-    ],
-    loader: {
-      '.jpg': 'dataurl',
-      '.png': 'dataurl',
-      '.svg': 'dataurl',
-      '.md': 'text',
-    },
+    plugins: [viteRawPlugin],
+    loader: siteBundleLoaders,
     define: {
       'process.env.NODE_ENV': '"production"',
       __STARLOG_OFFLINE__: 'false',
@@ -1656,22 +1677,8 @@ test('双栏编辑器滚动同步引擎（#101）：全层级源码行区间标�
     format: 'esm',
     platform: 'browser',
     target: 'es2022',
-    plugins: [
-      {
-        name: 'vite-raw-md',
-        setup(b) {
-          b.onResolve({ filter: /\?raw$/ }, (args) => ({
-            path: join(root, args.path.replace(/^\//, '').replace(/\?raw$/, '')),
-          }))
-        },
-      },
-    ],
-    loader: {
-      '.jpg': 'dataurl',
-      '.png': 'dataurl',
-      '.svg': 'dataurl',
-      '.md': 'text',
-    },
+    plugins: [viteRawPlugin],
+    loader: siteBundleLoaders,
     define: {
       'process.env.NODE_ENV': '"production"',
       __STARLOG_OFFLINE__: 'false',
@@ -1916,22 +1923,8 @@ test('双栏编辑器真实 DOM 双向联动交互（#101）：浏览右侧同�
     format: 'esm',
     platform: 'browser',
     target: 'es2022',
-    plugins: [
-      {
-        name: 'vite-raw-md',
-        setup(b) {
-          b.onResolve({ filter: /\?raw$/ }, (args) => ({
-            path: join(root, args.path.replace(/^\//, '').replace(/\?raw$/, '')),
-          }))
-        },
-      },
-    ],
-    loader: {
-      '.jpg': 'dataurl',
-      '.png': 'dataurl',
-      '.svg': 'dataurl',
-      '.md': 'text',
-    },
+    plugins: [viteRawPlugin],
+    loader: siteBundleLoaders,
     define: {
       'process.env.NODE_ENV': '"production"',
       __STARLOG_OFFLINE__: 'true',
@@ -2844,3 +2837,791 @@ test('issue #106 & offline CI：首页下滑自动加载更多 + main 更新自�
 
 
 
+/* ---------------------- 14–17. Issues #126 / #127 / #128 / #129 / #130 ---------------------- */
+const scrollSyncMod = await importTsModule('src/lib/scrollSync.ts')
+const routePathsMod = await importTsModule('src/lib/routePaths.ts')
+const backgroundImageMod = await importTsModule('src/lib/backgroundImage.ts')
+const settingsStoreMod = await importTsModule('src/lib/settingsStore.ts')
+const settingsSyncMod = await importTsModule('src/lib/settingsSync.ts')
+const updateQueueMod = await importTsModule('src/lib/updateQueue.ts')
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const readSource = (rel) => readFileSync(join(root, rel), 'utf8')
+
+test('issue #127：编辑区行号栏（镜像层增量同步、光标行列）与「可下滑到最后一行置顶」', async () => {
+  const { caretLineColumn, scrollPastEndPadding, syncTextareaLineMirror, rebuildTextareaLineMirror } = scrollSyncMod
+
+  // 1) 光标所在行 / 列 / 总行数（都从 1 起算）
+  assert.deepEqual(caretLineColumn('', 0), { line: 1, column: 1, total: 1 })
+  assert.deepEqual(caretLineColumn('ab\ncd\n', 4), { line: 2, column: 2, total: 3 })
+  assert.deepEqual(caretLineColumn('ab\ncd\n', 6), { line: 3, column: 1, total: 3 }, '末尾换行之后是空的第 3 行')
+  assert.deepEqual(caretLineColumn('ab\ncd', 2), { line: 1, column: 3, total: 2 }, '光标停在换行符之前仍属于第 1 行')
+  assert.deepEqual(caretLineColumn('ab\ncd', 99), { line: 2, column: 3, total: 2 }, '越界的偏移量按文末处理')
+
+  // 2) 「末行置顶」需要的底部留白：视口高度 − 顶部留白 − 一行
+  assert.equal(scrollPastEndPadding(612, 20, 24.5), 568)
+  assert.equal(scrollPastEndPadding(30, 20, 24.5), 20, '视口太矮时至少保留与顶部相同的留白')
+  assert.equal(scrollPastEndPadding(0, 20, 24.5), 20, '没有布局信息（jsdom / 隐藏）时不能算出负数')
+  assert.equal(scrollPastEndPadding(600, 20, 0), 20)
+  for (const [clientHeight, lines] of [[612, 141], [807, 64], [400, 2], [400, 1]]) {
+    const paddingTop = 20
+    const lineHeight = 24.5
+    const scrollHeight = paddingTop + lines * lineHeight + scrollPastEndPadding(clientHeight, paddingTop, lineHeight)
+    const maxScroll = Math.max(0, scrollHeight - clientHeight)
+    const lastLineTop = (lines - 1) * lineHeight
+    assert.ok(
+      Math.abs(maxScroll - lastLineTop) <= 0.5,
+      `${lines} 行、视口 ${clientHeight}px：滚到底时最后一行应恰好位于最上方（最大滚动量 ${maxScroll}，末行顶部 ${lastLineTop}）`,
+    )
+  }
+
+  // 3) 镜像层增量同步：随机编辑 600 次，每一步都必须与「整体重建」的结果逐字节相同
+  const dom = new JSDOM('<!doctype html><body><textarea></textarea><div id="patched"></div><div id="rebuilt"></div></body>')
+  const doc = dom.window.document
+  const ta = doc.querySelector('textarea')
+  const patched = doc.getElementById('patched')
+  const rebuilt = doc.getElementById('rebuilt')
+  let seed = 20261117
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 2 ** 32
+  }
+  const pick = (n) => Math.floor(rand() * n)
+  const word = () => ['正文', 'a<b', '&amp;', '  ', 'x'.repeat(pick(30)), '```', '$x$', ''][pick(8)]
+  let lines = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行 ${word()}`)
+  const verify = (label) => {
+    ta.value = lines.join('\n')
+    syncTextareaLineMirror(ta, patched)
+    rebuildTextareaLineMirror(ta, rebuilt)
+    assert.equal(patched.innerHTML, rebuilt.innerHTML, `增量同步与整体重建不一致：${label}`)
+    assert.equal(patched.children.length, lines.length)
+  }
+  verify('初始')
+  for (let step = 0; step < 600; step++) {
+    const op = pick(9)
+    const at = pick(lines.length)
+    if (op <= 2) lines[at] += word()                                            // 在某一行里输入
+    else if (op === 3) lines[at] = lines[at].slice(0, pick(lines[at].length + 1)) // 删掉行尾
+    else if (op === 4) lines.splice(at, 0, word())                              // 回车：插入一行
+    else if (op === 5 && lines.length > 1) lines.splice(at, 1 + pick(Math.min(3, lines.length - at))) // 删行
+    else if (op === 6) lines.splice(at, 0, ...Array.from({ length: 1 + pick(12) }, () => word())) // 粘贴若干行
+    else if (op === 7) lines[at] = ''                                           // 清空一行
+    else if (step % 97 === 0) lines = Array.from({ length: 500 + pick(200) }, (_, i) => `大段替换 ${i} ${word()}`) // 整篇粘贴
+    if (lines.length === 0) lines = ['']
+    verify(`第 ${step} 步（操作 ${op}）`)
+  }
+
+  // 只改动必要的节点：在几千行里敲一个字、回一次车，前后的行节点都原样保留（不是整体重建）
+  lines = Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`)
+  verify('3000 行')
+  const first = patched.children[0]
+  const middle = patched.children[1500]
+  const last = patched.children[2999]
+  lines[1500] += '!'
+  verify('长文中间输入一个字符')
+  assert.ok(patched.children[0] === first && patched.children[1500] === middle && patched.children[2999] === last, '输入字符只应改写那一行的文字')
+  lines.splice(1500, 0, '新的一行')
+  verify('长文中间回车')
+  assert.ok(patched.children[0] === first && patched.children[1501] === middle && patched.children[3000] === last, '回车只应插入一个节点，其余行节点保留')
+  assert.equal(patched.children[3000].getAttribute('data-l'), '3001', '后面的行号属性应顺延')
+  dom.window.close()
+
+  // 4) 真实编辑器（jsdom）：行号栏、状态栏、开关
+  const env = setupJsdomTestEnv('https://blog-apa.pages.dev/admin/new')
+  const {
+    React, createRoot, MemoryRouter, Routes, Route, ThemeProvider, FontProvider, BackgroundProvider,
+    AuthProvider, ToastProvider, Layout, Editor,
+  } = await loadSharedAppBundle()
+  const rootEl = env.dom.window.document.getElementById('root')
+  const reactRoot = createRoot(rootEl)
+  const h = React.createElement
+  try {
+    reactRoot.render(
+      h(MemoryRouter, { initialEntries: ['/admin/new'] },
+        h(AuthProvider, null, h(ThemeProvider, null, h(FontProvider, null, h(BackgroundProvider, null, h(ToastProvider, null,
+          h(Routes, null, h(Route, { element: h(Layout) }, h(Route, { path: '/admin/new', element: h(Editor) }))),
+        ))))),
+      ),
+    )
+    await sleep(80)
+    const win = env.dom.window
+    const editor = rootEl.querySelector('textarea.editor-textarea')
+    const mirror = rootEl.querySelector('div.editor-textarea.editor-mirror[aria-hidden="true"]')
+    assert.ok(editor && mirror, '编辑区应同时挂载 textarea 与镜像层（行号栏）')
+    assert.ok(mirror.classList.contains('editor-mirror--numbered'), '默认显示行号')
+    assert.ok(rootEl.querySelector('.editor-gutter'), '应有行号栏的底色 / 分隔线')
+    assert.equal(mirror.children.length, editor.value.split('\n').length, '镜像层每个逻辑行一个节点，数量与正文行数一致')
+    assert.equal(mirror.children[0].getAttribute('data-l'), '1')
+    assert.match(editor.style.paddingLeft, /^\d+px$/, '显示行号时正文向右让出行号栏的宽度')
+    assert.equal(editor.style.paddingBottom, '20px', '没有布局信息时底部留白退回与顶部相同，不出现 NaN / 负数')
+
+    const status = rootEl.querySelector('[data-editor-caret-status]')
+    assert.ok(status, '工具栏应显示光标位置与总行数')
+    assert.match(status.textContent, /^行 \d+\/\d+ · 列 \d+$/)
+
+    // 输入后行号栏立即跟上（不必等到滚动或空闲回调）
+    const setValue = Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value').set
+    setValue.call(editor, 'alpha\nbeta\ngamma')
+    editor.dispatchEvent(new win.Event('input', { bubbles: true }))
+    await sleep(30)
+    assert.deepEqual([...mirror.children].map((node) => node.textContent), ['alpha', 'beta', 'gamma'])
+    assert.deepEqual([...mirror.children].map((node) => node.getAttribute('data-l')), ['1', '2', '3'])
+
+    // 移动光标：状态栏与当前行高亮直接更新
+    editor.focus()
+    editor.setSelectionRange(8, 8)
+    editor.dispatchEvent(new win.KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }))
+    assert.equal(status.textContent, '行 2/3 · 列 3')
+    assert.ok(mirror.children[1].hasAttribute('data-active') && !mirror.children[0].hasAttribute('data-active'), '光标所在行应被标记')
+
+    // 中间插入一行：前后的行节点保留，行号顺延，高亮仍在光标所在行
+    const gamma = mirror.children[2]
+    setValue.call(editor, 'alpha\nbeta\nnew\ngamma')
+    editor.setSelectionRange(14, 14)
+    editor.dispatchEvent(new win.Event('input', { bubbles: true }))
+    await sleep(30)
+    assert.ok(mirror.children[3] === gamma && gamma.getAttribute('data-l') === '4')
+    assert.equal(status.textContent, '行 3/4 · 列 4')
+    assert.equal(mirror.querySelectorAll('[data-active]').length, 1)
+
+    // 设置里关闭「显示行号」：行号栏消失，正文不再缩进；状态栏保留
+    const settings = JSON.parse(win.localStorage.getItem('starlog:personal-settings') || '{}')
+    win.localStorage.setItem('starlog:personal-settings', JSON.stringify({ ...settings, editorLineNumbers: false }))
+    win.dispatchEvent(new win.CustomEvent('starlog:settings-changed', { detail: { name: 'editorLineNumbers' } }))
+    await sleep(40)
+    assert.ok(!mirror.classList.contains('editor-mirror--numbered'))
+    assert.equal(rootEl.querySelector('.editor-gutter'), null)
+    assert.equal(editor.style.paddingLeft, '')
+    assert.ok(rootEl.querySelector('[data-editor-caret-status]'), '关闭行号后工具栏仍显示行列与总行数')
+  } finally {
+    reactRoot.unmount()
+    await sleep(30)
+    env.cleanup()
+  }
+
+  // 5) 样式与源码约定
+  const css = readSource('src/styles/index.css')
+  assert.match(css, /\.editor-mirror--numbered > div::before \{[^}]*content: counter\(editor-line\)/, '行号用 CSS 计数器生成')
+  assert.match(css, /\.editor-mirror--numbered > div::before \{[^}]*visibility: visible/, '镜像层文字隐藏，行号单独设回可见')
+  const editorSource = readSource('src/pages/Editor.tsx')
+  assert.match(editorSource, /scrollPastEndPadding\(ta\.clientHeight, paddingTop, lineHeight\)/)
+  assert.match(editorSource, /data-scroll-past-end/, '双栏同步滚动时预览区末尾也要留出对应的空间')
+  assert.match(editorSource, /previewResized && scrollDriverRef\.current === 'editor'/, '预览重新渲染引起的滚动不应反过来拽动编辑区')
+  const settingsPage = readSource('src/pages/SettingsPage.tsx')
+  assert.match(settingsPage, /title="显示行号"/)
+  assert.match(settingsPage, /title="可下滑到最后一行置顶"/)
+})
+
+test('issue #128：页面之间跳转不再左右偏移；小页面进主包、重页面预取、动态背景与依赖拆包', () => {
+  // 1) 始终为滚动条预留位置：有 / 没有滚动条的页面视口宽度一致
+  const css = readSource('src/styles/index.css')
+  assert.match(
+    css,
+    /\n  html\.starlog-app:not\(\[data-immersive='true'\]\):not\(\[data-editor-fullscreen='true'\]\) \{\s*scrollbar-gutter:\s*stable;\s*\}/,
+    '除独占全屏的界面（回声洞、全屏编辑）外，始终为滚动条预留位置',
+  )
+  assert.match(readSource('index.html'), /<html lang="zh-CN" class="[^"]*\bstarlog-app\b[^"]*">/, '站点页面外壳的 <html> 上应带 starlog-app 类，上面的规则才会生效')
+  const bareHtmlRule = css.match(/\n  html \{[^}]*\}/)
+  assert.ok(bareHtmlRule, '应能在 index.css 里找到裸的 html 规则')
+  assert.doesNotMatch(
+    bareHtmlRule[0],
+    /scrollbar-gutter/,
+    '不能写进裸的 html 规则：它会原样带进 VS Code 插件的预览（那里滚动的是 body），让正文平白变窄',
+  )
+  assert.doesNotMatch(css, /scrollbar-gutter:\s*stable[^}]*\}\s*(?=[\s\S]*\n  html \{)/, 'scrollbar-gutter 只应出现在带 starlog-app 的那条规则里')
+  assert.equal((css.match(/scrollbar-gutter:/g) || []).length, 1)
+  const layout = readSource('src/components/Layout.tsx')
+  assert.match(layout, /rootEl\.dataset\.immersive = 'true'/)
+
+  // 2) 首屏不再打包默认用不到的动态背景渲染器
+  assert.doesNotMatch(layout, /^import \{ AnimatedBackdrop \} from '\.\/AnimatedBackdrop'/m)
+  assert.match(layout, /lazy\(\(\) =>\s*import\('\.\/AnimatedBackdrop'\)/)
+
+  // 3) 一两 KB 的页面直接进主包，较重的页面按需加载并可预取
+  const app = readSource('src/App.tsx')
+  for (const page of ['Archive', 'TagsPage', 'Toolbox', 'NotFound']) {
+    assert.match(app, new RegExp(`^import ${page} from './pages/${page}'`, 'm'), `${page} 应静态导入`)
+  }
+  for (const key of ['post', 'about', 'echo', 'genshin', 'login', 'admin', 'editor', 'settings']) {
+    assert.match(app, new RegExp(`lazy\\(routeLoaders\\.${key}\\)`), `${key} 应通过 routeLoaders 按需加载`)
+  }
+  assert.match(layout, /prefetchPath\(path\)/)
+  assert.match(layout, /scheduleIdlePrefetch\(\)/)
+
+  const { lazyRouteForPath, internalPathFromHref, shouldIdlePrefetch } = routePathsMod
+  assert.equal(lazyRouteForPath('/'), null, '首页在主包里')
+  for (const path of ['/archive', '/tags', '/tags/OI', '/toolbox', '/nothing-here']) {
+    assert.equal(lazyRouteForPath(path), null, `${path} 在主包里，不需要预取`)
+  }
+  assert.equal(lazyRouteForPath('/posts/hello-starlog'), 'post')
+  assert.equal(lazyRouteForPath('posts/hello-starlog/'), 'post')
+  assert.equal(lazyRouteForPath('/about'), 'about')
+  assert.equal(lazyRouteForPath('/toolbox/echo'), 'echo')
+  assert.equal(lazyRouteForPath('/toolbox/genshin'), 'genshin')
+  assert.equal(lazyRouteForPath('/toolbox/genshin/characters/10000022'), 'genshin')
+  assert.equal(lazyRouteForPath('/settings'), 'settings')
+  assert.equal(lazyRouteForPath('/admin/settings'), 'settings')
+  assert.equal(lazyRouteForPath('/admin'), 'admin')
+  assert.equal(lazyRouteForPath('/admin/new'), 'editor')
+  assert.equal(lazyRouteForPath('/admin/edit/some-post'), 'editor')
+  assert.equal(lazyRouteForPath('/editor/some-post'), 'editor')
+  assert.equal(lazyRouteForPath('/login'), 'login')
+
+  const origin = 'https://lrbkdgw.github.io'
+  assert.equal(internalPathFromHref(`${origin}/Blog/posts/a`, '/Blog/', origin), '/posts/a')
+  assert.equal(internalPathFromHref(`${origin}/Blog/`, '/Blog/', origin), '/')
+  assert.equal(internalPathFromHref(`${origin}/Blog`, '/Blog/', origin), '/')
+  assert.equal(internalPathFromHref('/Blog/archive?q=1#top', '/Blog/', origin), '/archive')
+  assert.equal(internalPathFromHref(`${origin}/posts/a`, '/', origin), '/posts/a')
+  assert.equal(internalPathFromHref(`${origin}/other-site/posts/a`, '/Blog/', origin), null, '部署前缀之外的同源链接不算站内路径')
+  assert.equal(internalPathFromHref('https://github.com/lrbkdgw', '/Blog/', origin), null, '外链不预取')
+  assert.equal(internalPathFromHref('mailto:someone@example.com', '/Blog/', origin), null)
+
+  assert.equal(shouldIdlePrefetch(undefined), true, '浏览器不提供网络信息时照常预取')
+  assert.equal(shouldIdlePrefetch({ effectiveType: '4g' }), true)
+  assert.equal(shouldIdlePrefetch({ effectiveType: '4g', saveData: true }), false, '省流量模式不做空闲预取')
+  assert.equal(shouldIdlePrefetch({ effectiveType: '3g' }), false)
+  assert.equal(shouldIdlePrefetch({ effectiveType: 'slow-2g' }), false)
+
+  // 4) 很少变化的依赖单独成包，发布文章后回访的读者不必重新下载它们
+  const viteConfig = readSource('vite.config.ts')
+  assert.match(viteConfig, /manualChunks\(id: string\)/)
+  assert.match(viteConfig, /\(react\|react-dom\|react-router\|react-router-dom\|scheduler\|js-yaml\)/)
+  assert.match(viteConfig, /return 'vendor'/)
+  // 离线单文件版只允许产出一个脚本，不能套用拆包配置
+  assert.doesNotMatch(readSource('vite.offline.config.ts'), /manualChunks/)
+})
+
+test('issue #126：固定背景图片——仓库目录里的图片可选、偏好校验、本机图片缩放与背景先后关系', async () => {
+  const { readdirSync } = await import('node:fs')
+  const {
+    DEFAULT_BACKGROUND_IMAGE, normalizeBackgroundImage, listRepoBackgroundImages, findRepoBackgroundImage,
+    fitWithin, resolvePageBackground,
+  } = backgroundImageMod
+
+  // 1) 仓库目录存在且里面的图片都会被收集（扩展名与构建时的匹配规则一致）
+  const directory = 'user_upload/background_image'
+  const source = readSource('src/lib/backgroundImage.ts')
+  const glob = source.match(/import\.meta\.glob\(\s*'([^']+)'/)
+  assert.ok(glob, '应通过 import.meta.glob 在构建时收集图片')
+  assert.ok(glob[1].startsWith(`/${directory}/*.`), `收集的目录应是 /${directory}/`)
+  const extensions = glob[1].match(/\{([^}]+)\}/)[1].split(',')
+  const files = readdirSync(join(root, directory))
+  assert.ok(files.length >= 1, `${directory}/ 里至少应有一张图片`)
+  for (const file of files) {
+    assert.ok(extensions.includes(file.split('.').pop()), `${directory}/${file} 的扩展名不在收集范围内，设置里将选不到它`)
+  }
+  assert.match(source, /if \(OFFLINE\) return \{\}/, '离线单文件版不内置仓库背景图（否则每张图都会被内联进那个文件）')
+
+  const listed = listRepoBackgroundImages({
+    '/user_upload/background_image/b10.png': '/assets/b10-x.png',
+    '/user_upload/background_image/Venti1.jpg': '/assets/Venti1-x.jpg',
+    '/user_upload/background_image/b2.webp': '/assets/b2-x.webp',
+  })
+  assert.deepEqual(listed.map((item) => item.file), ['b2.webp', 'b10.png', 'Venti1.jpg'], '按名称排序，数字按数值比较')
+  assert.deepEqual(listed[2], { file: 'Venti1.jpg', name: 'Venti1', url: '/assets/Venti1-x.jpg' })
+
+  // 2) 偏好校验：任何来路不明的数据都规范成合法值
+  assert.deepEqual(normalizeBackgroundImage(null), DEFAULT_BACKGROUND_IMAGE)
+  assert.deepEqual(normalizeBackgroundImage('Venti1.jpg'), DEFAULT_BACKGROUND_IMAGE)
+  assert.equal(DEFAULT_BACKGROUND_IMAGE.source, 'none', '默认不使用图片')
+  assert.deepEqual(
+    normalizeBackgroundImage({ source: 'repo', file: '../../secret/Venti1.jpg', dim: 300, blur: -5, updatedAt: 7 }),
+    { source: 'repo', file: 'Venti1.jpg', localName: '', dim: 90, blur: 0, updatedAt: 7 },
+    '文件名只保留最后一段，遮罩与模糊限制在范围内',
+  )
+  assert.equal(normalizeBackgroundImage({ source: 'repo', file: '' }).source, 'none', '没有文件名的仓库图片视为未启用')
+  assert.equal(normalizeBackgroundImage({ source: 'remote', file: 'a.jpg' }).source, 'none', '未知来源视为未启用')
+  assert.equal(normalizeBackgroundImage({ source: 'local', dim: 'x' }).dim, DEFAULT_BACKGROUND_IMAGE.dim)
+  assert.equal(normalizeBackgroundImage({ source: 'local', localName: 'C:\\Users\\me\\Pictures\\a.png' }).localName, 'a.png')
+
+  assert.equal(findRepoBackgroundImage({ ...DEFAULT_BACKGROUND_IMAGE, source: 'repo', file: 'Venti1.jpg' }, listed)?.url, '/assets/Venti1-x.jpg')
+  assert.equal(findRepoBackgroundImage({ ...DEFAULT_BACKGROUND_IMAGE, source: 'repo', file: 'gone.jpg' }, listed), null, '图片已从仓库删除时回退为默认背景')
+  assert.equal(findRepoBackgroundImage({ ...DEFAULT_BACKGROUND_IMAGE, source: 'local', file: 'Venti1.jpg' }, listed), null)
+
+  // 3) 本机图片保存前等比缩小：长边不超过上限，不放大
+  assert.deepEqual(fitWithin(4000, 2794, 2880), { width: 2880, height: 2012 })
+  assert.deepEqual(fitWithin(3000, 6000, 2880), { width: 1440, height: 2880 })
+  assert.deepEqual(fitWithin(1920, 1080, 2880), { width: 1920, height: 1080 })
+  assert.deepEqual(fitWithin(8000, 1, 2880), { width: 2880, height: 1 })
+
+  // 4) 固定图片 / 动态背景 / 文章指令的先后关系
+  const image = '/assets/Venti1-x.jpg'
+  assert.deepEqual(resolvePageBackground({ articleScene: null, userScene: 'none', imageUrl: null }), { imageUrl: null, scene: 'none' })
+  assert.deepEqual(resolvePageBackground({ articleScene: null, userScene: 'sakura', imageUrl: null }), { imageUrl: null, scene: 'sakura' })
+  assert.deepEqual(
+    resolvePageBackground({ articleScene: null, userScene: 'sakura', imageUrl: image }),
+    { imageUrl: image, scene: 'none' },
+    '启用固定背景图片时动态背景让位',
+  )
+  assert.deepEqual(
+    resolvePageBackground({ articleScene: 'snow', userScene: 'none', imageUrl: image }),
+    { imageUrl: null, scene: 'snow' },
+    '文章用 ::set-background 指定了场景时以文章为准',
+  )
+  assert.deepEqual(
+    resolvePageBackground({ articleScene: 'none', userScene: 'sakura', imageUrl: image }),
+    { imageUrl: null, scene: 'none' },
+    '文章强制「无背景」时图片与动态背景都不显示',
+  )
+
+  // 5) 渲染与界面约定
+  const layout = readSource('src/components/Layout.tsx')
+  assert.match(layout, /resolvePageBackground<SceneId>\(/)
+  assert.match(layout, /articleScene: ignoreOverride \? null : override/, '回声洞等独占页面不理会文章指令，始终用读者自己的背景')
+  assert.match(layout, /className="site-background-scrim absolute inset-0" style=\{\{ opacity: dim \/ 100 \}\}/)
+  const css = readSource('src/styles/index.css')
+  assert.match(css, /\.site-background-scrim \{\s*background-color: var\(--site-background\);/)
+  assert.match(css, /\.dark \.site-background-scrim \{\s*background-color: var\(--site-background-dark\);/)
+  const panel = readSource('src/components/BackgroundImageSettings.tsx')
+  assert.match(panel, /REPO_BACKGROUND_IMAGES\.map\(/, '设置页列出仓库目录里的每一张图片')
+  assert.match(panel, /type="file"\s+accept="image\/\*"/, '可以选择本地图片')
+  assert.match(readSource('src/pages/SettingsPage.tsx'), /<BackgroundImageSettings \/>/)
+})
+
+/** 内存里的「假 GitHub」：只实现设置同步用到的 Discussions GraphQL 操作，并记录收到的每一个请求。 */
+function createFakeGithub() {
+  const users = { 'tok-alice': 'alice', 'tok-bob': 'bob', 'tok-carol': 'carol' }
+  const state = {
+    discussions: [
+      { id: 'D_welcome', title: 'Welcome to Blog Discussions!', body: 'hello', comments: [] },
+      { id: 'D_echo', title: '回声洞', body: '留言存档', comments: [] },
+    ],
+    nextId: 1,
+    log: [],
+    failNext: 0,
+    /** 下一次列出评论时假装一条都没有（模拟「另一台设备的评论此刻还没写进来」） */
+    hideCommentsOnce: false,
+  }
+  const findComment = (id) => {
+    for (const discussion of state.discussions) {
+      for (const comment of discussion.comments) if (comment.id === id) return comment
+    }
+    return null
+  }
+  const missing = (id) => ({
+    data: { node: null },
+    errors: [{ type: 'NOT_FOUND', message: `Could not resolve to a node with the global id of '${id}'.` }],
+  })
+  const run = (viewer, op, variables) => {
+    switch (op) {
+      case 'SettingsComment': {
+        const comment = findComment(variables.id)
+        if (!comment) return missing(variables.id)
+        return { data: { node: { id: comment.id, url: comment.url, body: comment.body, viewerDidAuthor: comment.author === viewer } } }
+      }
+      case 'SettingsDiscussion':
+        return {
+          data: {
+            repository: {
+              id: 'R_blog',
+              hasDiscussionsEnabled: true,
+              discussionCategories: { nodes: [{ id: 'C_ann', name: 'Announcements', slug: 'announcements' }, { id: 'C_general', name: 'General', slug: 'general' }] },
+              discussions: {
+                nodes: state.discussions.map(({ id, title, body }) => ({ id, title, body })),
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        }
+      case 'CreateSettingsDiscussion': {
+        const discussion = { id: `D_settings_${state.nextId++}`, title: variables.title, body: variables.body, category: variables.categoryId, author: viewer, comments: [] }
+        state.discussions.push(discussion)
+        return { data: { createDiscussion: { discussion: { id: discussion.id } } } }
+      }
+      case 'SettingsComments': {
+        const discussion = state.discussions.find((item) => item.id === variables.id)
+        if (!discussion) return missing(variables.id)
+        const visible = state.hideCommentsOnce ? [] : discussion.comments
+        state.hideCommentsOnce = false
+        return {
+          data: {
+            node: {
+              comments: {
+                nodes: visible.map((c) => ({ id: c.id, url: c.url, body: c.body, viewerDidAuthor: c.author === viewer })),
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        }
+      }
+      case 'AddSettingsComment': {
+        const discussion = state.discussions.find((item) => item.id === variables.discussionId)
+        if (!discussion) return missing(variables.discussionId)
+        const id = `DC_${state.nextId++}`
+        const comment = { id, url: `https://github.example/discussions/1#discussioncomment-${id}`, body: variables.body, author: viewer, edits: 0 }
+        discussion.comments.push(comment)
+        return { data: { addDiscussionComment: { comment: { id, url: comment.url } } } }
+      }
+      case 'UpdateSettingsComment': {
+        const comment = findComment(variables.commentId)
+        if (!comment) return missing(variables.commentId)
+        if (comment.author !== viewer) return { errors: [{ type: 'FORBIDDEN', message: `${viewer} cannot update this comment` }] }
+        comment.body = variables.body
+        comment.edits += 1
+        return { data: { updateDiscussionComment: { comment: { id: comment.id, url: comment.url } } } }
+      }
+      case 'DeleteSettingsComment': {
+        const comment = findComment(variables.id)
+        if (!comment) return missing(variables.id)
+        if (comment.author !== viewer) return { errors: [{ type: 'FORBIDDEN', message: `${viewer} cannot delete this comment` }] }
+        for (const discussion of state.discussions) {
+          const index = discussion.comments.indexOf(comment)
+          if (index !== -1) discussion.comments.splice(index, 1)
+        }
+        return { data: { deleteDiscussionComment: { comment: { id: comment.id } } } }
+      }
+      default:
+        return { errors: [{ type: 'NOT_FOUND', message: `unsupported operation ${op}` }] }
+    }
+  }
+  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  const fetchImpl = async (input, init = {}) => {
+    const url = new URL(typeof input === 'string' ? input : input.url)
+    const method = String(init.method || 'GET').toUpperCase()
+    const viewer = users[String(init.headers?.Authorization || '').replace(/^Bearer\s+/i, '')] || null
+    const entry = { method, host: url.hostname, path: url.pathname, viewer, op: null }
+    state.log.push(entry)
+    if (url.hostname !== 'api.github.com' || url.pathname !== '/graphql') return json(404, { message: 'Not Found' })
+    const payload = JSON.parse(init.body || '{}')
+    entry.op = (payload.query.match(/(?:query|mutation)\s+(\w+)/) || [])[1] || 'anonymous'
+    if (!viewer) return json(401, { message: 'Bad credentials' })
+    if (state.failNext > 0) {
+      state.failNext -= 1
+      return json(500, { message: 'Server Error' })
+    }
+    return json(200, run(viewer, entry.op, payload.variables || {}))
+  }
+  const commentOf = (login) => {
+    for (const discussion of state.discussions) {
+      const comment = discussion.comments.find((item) => item.author === login)
+      if (comment) return comment
+    }
+    return null
+  }
+  const snapshotOf = (login) => {
+    const match = commentOf(login)?.body.match(/```json\s*\n([\s\S]*?)\n```/)
+    return match ? JSON.parse(match[1]) : null
+  }
+  const valuesOf = (login) =>
+    Object.fromEntries(Object.entries(snapshotOf(login)?.settings ?? {}).map(([name, entry]) => [name, entry.value]))
+  const ops = (from = 0) => state.log.slice(from).filter((entry) => entry.op).map((entry) => entry.op)
+  return { state, fetch: fetchImpl, commentOf, snapshotOf, valuesOf, ops }
+}
+
+test('issue #129 / #130：所有设置登录后自动保存到账号——存在 GitHub Discussions 里，不写仓库；多设备按项合并', async () => {
+  const {
+    mergeSettings, stableStringify, serializeSettingsComment, parseSettingsComment, collectLocalSettings,
+    startSettingsSync, stopSettingsSync, syncSettingsNow, getSettingsSyncState, subscribeSettingsSync,
+    SETTINGS_COMMENT_MARKER,
+  } = settingsSyncMod
+  const { writePersonalSetting, writeThemeMode, readSettingTimes } = settingsStoreMod
+
+  /* ---------- 1) 合并规则（纯函数） ---------- */
+  assert.equal(stableStringify({ b: 1, a: [2, { d: 1, c: 2 }] }), stableStringify({ a: [2, { c: 2, d: 1 }], b: 1 }), '比较设置值时不受对象键顺序影响')
+  const merged = mergeSettings(
+    {
+      onlyLocal: { value: 1, at: 10 },
+      localNewer: { value: 'mine', at: 30 },
+      remoteNewer: { value: 'mine', at: 10 },
+      tie: { value: 'mine', at: 20 },
+      same: { value: { a: 1, b: 2 }, at: 50 },
+      legacy: { value: 'device', at: 0 },
+    },
+    {
+      onlyRemote: { value: 2, at: 5 },
+      localNewer: { value: 'theirs', at: 20 },
+      remoteNewer: { value: 'theirs', at: 40 },
+      tie: { value: 'theirs', at: 20 },
+      same: { value: { b: 2, a: 1 }, at: 5 },
+      legacy: { value: 'account', at: 0 },
+    },
+  )
+  assert.deepEqual(merged.outgoing.sort(), ['localNewer', 'onlyLocal'], '只有本机更新、或账号里没有的项需要写回账号')
+  assert.deepEqual(Object.keys(merged.incoming).sort(), ['legacy', 'onlyRemote', 'remoteNewer', 'tie'], '账号更新的项、以及时间相同而值不同的项，以账号为准')
+  assert.equal(merged.merged.localNewer.value, 'mine')
+  assert.equal(merged.merged.remoteNewer.value, 'theirs')
+  assert.equal(merged.merged.tie.value, 'theirs')
+  assert.equal(merged.merged.legacy.value, 'account', '时间未知（同步机制上线前留下的设置）时以账号里已有的为准')
+  assert.deepEqual(mergeSettings({}, {}), { merged: {}, incoming: {}, outgoing: [] })
+
+  /* ---------- 2) 评论正文的格式 ---------- */
+  const snapshot = { version: 1, updatedAt: 123, settings: { colorTheme: { value: 'ocean', at: 100 }, font: { value: { sizePercent: 110 }, at: 90 } } }
+  const body = serializeSettingsComment('alice', snapshot)
+  assert.ok(body.startsWith(SETTINGS_COMMENT_MARKER), '评论以识别标记开头')
+  assert.match(body, /@alice/)
+  assert.deepEqual(parseSettingsComment(body), snapshot, '序列化后应能原样解析回来')
+  assert.equal(parseSettingsComment('普通评论，没有标记\n```json\n{"settings":{}}\n```'), null, '没有识别标记的评论不是设置评论')
+  assert.equal(parseSettingsComment(`${SETTINGS_COMMENT_MARKER}\n被人改坏了`), null)
+  assert.equal(parseSettingsComment(`${SETTINGS_COMMENT_MARKER}\n\`\`\`json\n{ 不是 JSON\n\`\`\``), null)
+  assert.deepEqual(
+    parseSettingsComment(`${SETTINGS_COMMENT_MARKER}\n\`\`\`json\n{"settings":{"a":{"value":1,"at":-5},"b":"坏的","c":{"at":3},"d":{"value":true}}}\n\`\`\``).settings,
+    { a: { value: 1, at: 0 }, d: { value: true, at: 0 } },
+    '结构不对的条目被丢弃，非法时间按 0 处理',
+  )
+  assert.throws(() => serializeSettingsComment('alice', { version: 1, updatedAt: 0, settings: { big: { value: 'x'.repeat(70000), at: 1 } } }), /过大/)
+
+  /* ---------- 3) 端到端：两台设备 + 两个账号，GitHub 用内存里的假实现 ---------- */
+  const env = setupJsdomTestEnv('https://lrbkdgw.github.io/Blog/settings')
+  const github = createFakeGithub()
+  globalThis.fetch = github.fetch
+  const storage = env.dom.window.localStorage
+  const devices = { A: {}, B: {} }
+  let currentDevice = null
+  /** 换一台设备：停掉同步，把 localStorage 整体换成那台设备的内容 */
+  const useDevice = (name, token) => {
+    stopSettingsSync()
+    if (currentDevice) {
+      devices[currentDevice] = Object.fromEntries(Array.from({ length: storage.length }, (_, i) => [storage.key(i), storage.getItem(storage.key(i))]))
+    }
+    storage.clear()
+    for (const [key, value] of Object.entries(devices[name])) storage.setItem(key, value)
+    if (token) storage.setItem('starlog:gh-token', token)
+    else storage.removeItem('starlog:gh-token')
+    currentDevice = name
+  }
+  const personal = () => JSON.parse(storage.getItem('starlog:personal-settings') || '{}')
+  const login = async (user) => {
+    startSettingsSync(user)
+    await syncSettingsNow()
+    assert.equal(getSettingsSyncState().status, 'synced', `同步应成功：${getSettingsSyncState().error ?? ''}`)
+  }
+
+  try {
+    // 设备 A：alice 登录，但还没改过任何设置 → 不在 GitHub 上创建任何东西
+    useDevice('A', 'tok-alice')
+    await login('alice')
+    assert.deepEqual(github.ops().filter((op) => /Create|Add|Update/.test(op)), [], '没有设置可保存时不创建讨论、不发表评论')
+    assert.equal(getSettingsSyncState().login, 'alice')
+
+    // 修改设置后自动保存（防抖 1.5 秒）——没有任何「保存」按钮的调用
+    const notified = []
+    const unsubscribe = subscribeSettingsSync(() => notified.push(getSettingsSyncState().status))
+    writePersonalSetting('colorTheme', 'ocean')
+    writePersonalSetting('font', { families: ['LXGW WenKai'], monoFamilies: [], sizePercent: 110, updatedAt: 1 })
+    assert.equal(getSettingsSyncState().pending, true, '改动后立即标记为「有改动待保存」')
+    assert.equal(github.commentOf('alice'), null, '防抖期间还没有发请求')
+    await sleep(1900)
+    while (getSettingsSyncState().status === 'syncing') await sleep(20)
+    unsubscribe()
+    assert.ok(notified.includes('syncing') && notified.at(-1) === 'synced', `状态订阅应收到 syncing → synced：${notified.join(',')}`)
+    assert.equal(getSettingsSyncState().pending, false)
+    const settingsDiscussion = github.state.discussions.find((item) => item.title === '设置同步')
+    assert.ok(settingsDiscussion, '首次保存时自动创建「设置同步」讨论')
+    assert.equal(settingsDiscussion.category, 'C_general', '讨论建在配置的 General 分类，而不是排在第一位的 Announcements')
+    assert.match(settingsDiscussion.body, /starlog-settings-sync/)
+    assert.deepEqual(github.valuesOf('alice'), { colorTheme: 'ocean', font: { families: ['LXGW WenKai'], monoFamilies: [], sizePercent: 110, updatedAt: 1 } })
+    assert.ok(getSettingsSyncState().commentUrl?.includes('discussioncomment'), '保存位置的链接可供界面展示')
+    const times = readSettingTimes()
+    assert.equal(github.snapshotOf('alice').settings.colorTheme.at, times.colorTheme, '账号里记录的是这一项在本机的修改时间')
+
+    // 其余种类的设置（包括明暗模式、编辑器开关、目标仓库、以后新增的任意偏好）同样自动保存
+    writeThemeMode('dark')
+    writePersonalSetting('editorLineNumbers', false)
+    writePersonalSetting('animatedBackground', { scene: 'snow', values: {} })
+    writePersonalSetting('background', { color: '#112233', intensity: 60, updatedAt: 2 })
+    writePersonalSetting('repository', { owner: 'alice', repo: 'my-blog', branch: 'main', postsDir: 'content/posts' })
+    writePersonalSetting('backgroundImage', { source: 'local', file: '', localName: '全家福-2026.jpg', dim: 30, blur: 4, updatedAt: 3 })
+    writePersonalSetting('someFutureSetting', { enabled: true })
+    await syncSettingsNow()
+    const aliceValues = github.valuesOf('alice')
+    assert.deepEqual(
+      Object.keys(aliceValues).sort(),
+      ['animatedBackground', 'background', 'backgroundImage', 'colorTheme', 'editorLineNumbers', 'font', 'repository', 'someFutureSetting', 'themeMode'],
+      '「所有设置」都在同步范围内，不需要逐项登记',
+    )
+    assert.equal(aliceValues.themeMode, 'dark')
+    assert.equal(aliceValues.backgroundImage.source, 'local')
+    assert.equal(aliceValues.backgroundImage.localName, '', '本机图片的文件名不上传（保存位置是公开的）')
+    assert.equal(personal().backgroundImage.localName, '全家福-2026.jpg', '本机仍然记得自己的文件名')
+    assert.equal(github.state.discussions.filter((item) => item.title === '设置同步').length, 1, '讨论只创建一次')
+    assert.equal(settingsDiscussion.comments.length, 1, '同一账号始终只有一条评论，之后都是更新它')
+
+    // 设备 B：同一账号、全新的浏览器 → 登录即恢复全部设置，且不需要再写一遍
+    await sleep(5)
+    useDevice('B', 'tok-alice')
+    let mark = github.state.log.length
+    await login('alice')
+    assert.equal(personal().colorTheme, 'ocean')
+    assert.equal(personal().font.sizePercent, 110)
+    assert.equal(personal().editorLineNumbers, false)
+    assert.equal(personal().animatedBackground.scene, 'snow')
+    assert.deepEqual(personal().repository, { owner: 'alice', repo: 'my-blog', branch: 'main', postsDir: 'content/posts' })
+    assert.equal(storage.getItem('starlog:theme'), 'dark', '明暗模式写回首屏脚本读取的那个键')
+    assert.equal(personal().backgroundImage.source, 'local')
+    assert.equal(personal().backgroundImage.localName, '', '另一台设备只知道「用的是本地图片」')
+    assert.deepEqual(github.ops(mark).filter((op) => /Create|Add|Update/.test(op)), [], '只读取，不重复写入')
+    assert.equal(getSettingsSyncState().pending, false, '从账号取回的设置不算本机改动，不会排队再推一遍')
+    const quiet = github.state.log.length
+    await sleep(1800)
+    assert.equal(github.state.log.length, quiet, '取回设置之后不应再触发多余的同步请求（套用的值不是本机改动）')
+    assert.equal(readSettingTimes().colorTheme, github.snapshotOf('alice').settings.colorTheme.at, '取回的设置按它在账号里的时间入账，不会被当成新的本机改动')
+
+    // 两台设备各改一项：按项合并，互不覆盖
+    await sleep(5)
+    writePersonalSetting('editorScrollPastEnd', false)                    // B 改了一个编辑器开关
+    writePersonalSetting('backgroundImage', { ...personal().backgroundImage, localName: 'B 设备上的图.png' }) // B 也选了一张本地图
+    await syncSettingsNow()
+    await sleep(5)
+    useDevice('A', 'tok-alice')
+    writePersonalSetting('colorTheme', 'sakura')                          // A 离线时改了配色（此时还不知道 B 的改动）
+    mark = github.state.log.length
+    await login('alice')
+    assert.equal(github.valuesOf('alice').colorTheme, 'sakura', 'A 的配色写回账号')
+    assert.equal(github.valuesOf('alice').editorScrollPastEnd, false, 'B 的开关没有被 A 覆盖')
+    assert.equal(personal().editorScrollPastEnd, false, 'A 同时取回了 B 的开关')
+    assert.equal(personal().backgroundImage.localName, '全家福-2026.jpg', 'A 自己的本地图片文件名不受另一台设备影响')
+    assert.ok(github.ops(mark).includes('SettingsComment'), '已知评论编号时直接按编号读取（一次请求）')
+    assert.ok(!github.ops(mark).includes('SettingsDiscussion'), '不必每次都重新查找讨论')
+    await sleep(5)
+    useDevice('B', 'tok-alice')
+    await login('alice')
+    assert.equal(personal().colorTheme, 'sakura', 'B 取回了 A 的配色')
+    assert.equal(personal().editorScrollPastEnd, false)
+    assert.equal(personal().backgroundImage.localName, 'B 设备上的图.png')
+
+    // 别的设备时钟偏快：取回的时间在「未来」，这台设备之后的修改仍然要算数
+    const future = Date.now() + 86_400_000
+    const aliceComment = github.commentOf('alice')
+    const tampered = github.snapshotOf('alice')
+    tampered.settings.colorTheme = { value: 'gold', at: future }
+    aliceComment.body = serializeSettingsComment('alice', tampered)
+    await syncSettingsNow()
+    assert.equal(personal().colorTheme, 'gold')
+    writePersonalSetting('colorTheme', 'mono')
+    await syncSettingsNow()
+    assert.equal(github.valuesOf('alice').colorTheme, 'mono', '本机的新修改不会被「未来的时间戳」永远压住')
+    assert.ok(github.snapshotOf('alice').settings.colorTheme.at > future)
+
+    // 账号里的数据不可信时逐项校验：非法的值被忽略，不影响其余设置
+    const broken = github.snapshotOf('alice')
+    const later = Date.now() + 2 * 86_400_000
+    broken.settings.themeMode = { value: 'rainbow', at: later }
+    broken.settings.repository = { value: { owner: '../../users/evil', repo: 'x' }, at: later }
+    broken.settings.colorTheme = { value: { not: 'a string' }, at: later }
+    broken.settings.oversized = { value: 'x'.repeat(30000), at: later }
+    broken.settings.editorScrollSync = { value: false, at: later }
+    aliceComment.body = serializeSettingsComment('alice', broken)
+    await syncSettingsNow()
+    assert.equal(storage.getItem('starlog:theme'), 'dark', '非法的明暗模式被忽略')
+    assert.equal(personal().repository.owner, 'alice', '不合法的目标仓库（会被拼进接口路径）被忽略')
+    assert.equal(personal().colorTheme, 'mono')
+    assert.equal('oversized' in personal(), false, '超大的值被忽略')
+    assert.equal(personal().editorScrollSync, false, '同一份数据里合法的项照常生效')
+
+    // 评论被删掉：下次修改设置时重新创建
+    settingsDiscussion.comments.splice(settingsDiscussion.comments.indexOf(aliceComment), 1)
+    writePersonalSetting('editorLineNumbers', true)
+    await syncSettingsNow()
+    assert.equal(getSettingsSyncState().status, 'synced')
+    assert.ok(github.commentOf('alice') && github.commentOf('alice').id !== aliceComment.id, '评论被删除后自动重建')
+    assert.equal(github.valuesOf('alice').editorLineNumbers, true)
+
+    // GitHub 出错：给出错误状态，本机设置照常生效；恢复后补上
+    github.state.failNext = 5
+    writePersonalSetting('editorLineNumbers', false)
+    await syncSettingsNow()
+    assert.equal(getSettingsSyncState().status, 'error')
+    assert.ok(getSettingsSyncState().error, '失败时带有原因说明')
+    assert.equal(personal().editorLineNumbers, false)
+    github.state.failNext = 0
+    await syncSettingsNow()
+    assert.equal(getSettingsSyncState().status, 'synced')
+    assert.equal(github.valuesOf('alice').editorLineNumbers, false)
+
+    // 换账号：这台设备上的设置不是新账号改的，不能凭修改时间盖过新账号已有的设置
+    await sleep(5)
+    useDevice('A', 'tok-bob')
+    await login('bob')                                                     // bob 还没有任何设置：A 上现有的设置补进他的账号
+    assert.equal(github.valuesOf('bob').colorTheme, 'sakura')
+    assert.ok(Object.values(github.snapshotOf('bob').settings).every((entry) => entry.at === 0), '这些设置的时间记为「未知」')
+    writePersonalSetting('colorTheme', 'emerald')
+    await syncSettingsNow()
+    assert.equal(github.valuesOf('bob').colorTheme, 'emerald')
+    assert.equal(github.valuesOf('alice').colorTheme, 'mono', 'bob 的修改不会碰 alice 的评论')
+    assert.equal(settingsDiscussion.comments.length, 2, '每个账号各一条评论')
+    await sleep(5)
+    useDevice('B', 'tok-bob')                                              // B 上是 alice 留下的设置，其中配色的修改时间比 bob 的还新
+    writePersonalSetting('colorTheme', 'crimson')
+    await sleep(5)
+    await login('bob')
+    assert.equal(personal().colorTheme, 'emerald', '换账号后以新账号已有的设置为准，不被这台设备上别人留下的较新修改覆盖')
+    assert.equal(github.valuesOf('bob').colorTheme, 'emerald')
+
+    // 两台设备同时第一次保存：各自都「没找到评论 → 新建一条」，随后自动并成最早的那一条
+    devices.X = {}
+    devices.Y = {}
+    await sleep(5)
+    useDevice('X', 'tok-carol')
+    writePersonalSetting('colorTheme', 'ocean')
+    await login('carol')
+    const carolFirst = github.commentOf('carol')
+    await sleep(5)
+    useDevice('Y', 'tok-carol')
+    writePersonalSetting('editorLineNumbers', false)
+    github.state.hideCommentsOnce = true                                   // Y 查找时，X 的评论「还没出现」
+    await login('carol')
+    const carolComments = settingsDiscussion.comments.filter((item) => item.author === 'carol')
+    assert.equal(carolComments.length, 1, '同一账号最终只保留一条评论')
+    assert.equal(carolComments[0].id, carolFirst.id, '保留最早的那一条，后建的那条被删除')
+    assert.deepEqual(github.valuesOf('carol'), { colorTheme: 'ocean', editorLineNumbers: false }, '两台设备的设置合并在同一条评论里')
+    assert.equal(personal().colorTheme, 'ocean', 'Y 随即取回了 X 的设置')
+
+    // 退出登录后不再同步
+    stopSettingsSync()
+    assert.equal(getSettingsSyncState().status, 'disabled')
+    mark = github.state.log.length
+    writePersonalSetting('colorTheme', 'sunset')
+    await sleep(1800)
+    assert.equal(github.state.log.length, mark, '退出登录后修改设置不再请求 GitHub')
+    assert.equal(personal().colorTheme, 'sunset', '设置仍然保存在本机')
+
+    // 全程只用 Discussions（GraphQL），没有任何仓库写入
+    const requests = [...new Set(github.state.log.map((entry) => `${entry.method} ${entry.host}${entry.path}`))]
+    assert.deepEqual(requests, ['POST api.github.com/graphql'], '设置同步只应访问 GraphQL 接口，不得读写仓库内容')
+
+    // 旧版遗留在待更新队列里的「账号偏好」条目不会再被提交到仓库
+    storage.setItem('starlog:update-queue', JSON.stringify([
+      { id: 'old-1', kind: 'settings-sync', title: '同步 @alice 的字体与字号偏好', target: '.starlog/settings/font-preferences/alice.json', createdAt: 1, text: '{}' },
+      { id: 'keep-1', kind: 'post-publish', title: 'Hello', target: 'hello', createdAt: 2, markdown: '# hi' },
+    ]))
+    assert.deepEqual(updateQueueMod.getUpdateQueue().map((item) => item.id), ['keep-1'], '读取队列时丢弃已废弃的 settings-sync 条目')
+  } finally {
+    stopSettingsSync()
+    env.cleanup()
+  }
+
+  /* ---------- 4) 仓库与源码里不再有「把个人设置写进仓库」的路径 ---------- */
+  const { existsSync } = await import('node:fs')
+  assert.equal(existsSync(join(root, '.starlog/settings')), false, '仓库里不应再保存任何账号的设置文件')
+  const githubSource = readSource('src/lib/github.ts')
+  for (const gone of ['.starlog/settings', 'saveGithubFontPreference', 'saveGithubBackgroundPreference', 'buildFontPreferenceFile', 'buildBackgroundPreferenceFile']) {
+    assert.ok(!githubSource.includes(gone), `github.ts 不应再包含 ${gone}`)
+  }
+  const queueSource = readSource('src/lib/updateQueue.ts')
+  assert.doesNotMatch(queueSource, /enqueueSettingsSync/)
+  assert.doesNotMatch(queueSource, /QUEUE_KINDS[^\n]*settings-sync/)
+  for (const file of ['src/lib/font.tsx', 'src/lib/background.tsx', 'src/pages/SettingsPage.tsx']) {
+    assert.doesNotMatch(readSource(file), /saveForGithub|enqueueSettingsSync/, `${file} 不应再有手动「保存到 GitHub」的入口`)
+  }
+  const syncSource = readSource('src/lib/settingsSync.ts')
+  assert.doesNotMatch(syncSource, /commitFileChanges|\/contents\/|enqueueUpdate/, '设置同步不得调用任何仓库写入接口')
+  assert.match(syncSource, /owner: githubConfig\.owner, name: githubConfig\.repo/, '保存位置固定在站点自己的仓库，不受「目标仓库」覆盖的影响')
+  assert.match(syncSource, /item\.viewerDidAuthor && item\.body\.includes\(SETTINGS_COMMENT_MARKER\)/, '只认当前登录者本人发表的设置评论')
+  // 登录状态接到同步上：登录即开始，无需任何手动操作；离线版不参与
+  assert.match(readSource('src/main.tsx'), /<SettingsSyncBridge \/>/)
+  const bridge = readSource('src/components/SettingsSyncBridge.tsx')
+  assert.match(bridge, /if \(OFFLINE \|\| !login\) return/)
+  assert.match(bridge, /module\.startSettingsSync\(login\)/)
+  // 明暗模式只有读者主动切换才算一次设置：首次访问按系统明暗显示，不应被当成选择同步到账号
+  const themeSource = readSource('src/lib/theme.tsx')
+  assert.doesNotMatch(themeSource, /localStorage\.setItem\(STORAGE_KEYS\.theme/)
+  assert.match(themeSource, /writeThemeMode\(next\)/)
+  // collectLocalSettings 在没有任何设置时为空，不会把默认值当成「改动」上传
+  const cleanEnv = setupJsdomTestEnv('https://lrbkdgw.github.io/Blog/')
+  try {
+    assert.deepEqual(collectLocalSettings(), {})
+  } finally {
+    cleanEnv.cleanup()
+  }
+})

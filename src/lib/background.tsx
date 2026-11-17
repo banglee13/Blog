@@ -2,16 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react'
 import { STORAGE_KEYS } from './config'
 import { readPersonalSetting, writePersonalSetting } from './settingsStore'
-import { fetchGithubBackgroundPreference, buildBackgroundPreferenceFile, backgroundSettingsPath } from './github'
-import { enqueueSettingsSync, getUpdateQueue } from './updateQueue'
-import { useAuth } from './auth'
-import { useTheme } from './theme'
-import {
-  setAnimatedBackgroundPreference,
-  useAnimatedBackground,
-  type AnimatedBackgroundPreference,
-} from './animatedBackground'
 
+/**
+ * 渐变背景色偏好。
+ *
+ * 这里只负责读写本机的偏好并把它套到页面上；登录后「自动保存到 GitHub 账号、在其他设备恢复」
+ * 由 settingsSync.ts 统一处理（所有个人偏好走同一条通道，不再各自维护一份账号文件）。
+ */
 export interface BackgroundPreference {
   color: string
   /** 0–100：自定义颜色在渐变中的明显程度，最大 100% 时全屏覆盖且不透明 */
@@ -19,24 +16,18 @@ export interface BackgroundPreference {
   updatedAt: number
 }
 
-type AccountSync = 'idle' | 'loading' | 'synced' | 'queued' | 'error'
-
 interface BackgroundCtx {
   background: BackgroundPreference
-  accountSync: AccountSync
   setBackground: (color: string, intensity?: number) => BackgroundPreference
   resetBackground: () => void
-  saveForGithub: () => Promise<void>
 }
 
 const DEFAULT_INTENSITY = 50
 const DEFAULT_BACKGROUND: BackgroundPreference = { color: '', intensity: DEFAULT_INTENSITY, updatedAt: 0 }
 const Ctx = createContext<BackgroundCtx>({
   background: DEFAULT_BACKGROUND,
-  accountSync: 'idle',
   setBackground: () => DEFAULT_BACKGROUND,
   resetBackground: () => {},
-  saveForGithub: async () => {},
 })
 
 export function normalizeBackgroundColor(value: string): string {
@@ -154,47 +145,9 @@ function readLocal(): BackgroundPreference {
   return DEFAULT_BACKGROUND
 }
 
-/**
- * 账号外观缓存：除了旧的渐变背景色，还记住配色主题、明暗模式与动态背景，
- * 这样刚登录、远端文件还没读完时也能先恢复上一台设备的样子。
- */
-interface AccountAppearanceCache {
-  color?: string
-  intensity?: number
-  updatedAt?: number
-  colorTheme?: string
-  mode?: string
-  animated?: AnimatedBackgroundPreference
-}
-
-function readAccountCache(): Record<string, AccountAppearanceCache> {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS.backgroundAccounts) || '{}')
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function writeAccountCache(login: string, appearance: AccountAppearanceCache) {
-  const cache = readAccountCache()
-  cache[login] = appearance
-  localStorage.setItem(STORAGE_KEYS.backgroundAccounts, JSON.stringify(cache))
-}
-
-function isThemeMode(value: unknown): value is 'light' | 'dark' | 'system' {
-  return value === 'light' || value === 'dark' || value === 'system'
-}
-
 export function BackgroundProvider({ children }: { children: ReactNode }) {
-  const { ghUser, canPublish, loading: authLoading } = useAuth()
-  // 配色主题与动态背景也属于「账号外观」，由这里一起恢复 / 保存到同一份 GitHub 偏好文件。
-  const { colorTheme, mode, setColorTheme, setMode } = useTheme()
-  const animatedBackground = useAnimatedBackground()
   const [background, setBackgroundState] = useState<BackgroundPreference>(readLocal)
   const backgroundRef = useRef(background)
-  const [accountSync, setAccountSync] = useState<AccountSync>('idle')
-  const accountRef = useRef('')
 
   const commit = useCallback((next: BackgroundPreference) => {
     applyToDocument(next.color, next.intensity)
@@ -204,8 +157,7 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     return next
   }, [])
 
-  // 通过 ref 读取当前强度，让 setBackground 的身份保持稳定：
-  // 否则恢复账号偏好时状态一变更就会重建回调，触发恢复 effect 的清理，把远程结果误判为已取消。
+  // 通过 ref 读取当前强度，让 setBackground 的身份保持稳定。
   const setBackground = useCallback(
     (value: string, intensity = backgroundRef.current.intensity) => {
       const color = normalizeBackgroundColor(value)
@@ -218,8 +170,7 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     commit({ ...DEFAULT_BACKGROUND, updatedAt: Date.now() })
   }, [commit])
 
-  // Browser-store updates are immediately visible in other tabs and views.
-  // to other mounted views and other tabs without a repository write.
+  // 其他视图、其他标签页的修改，以及设置同步从账号取回的新值，都立即生效。
   useEffect(() => {
     const sync = () => {
       const next = readLocal()
@@ -239,106 +190,9 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     applyToDocument(background.color, background.intensity)
   }, [])
 
-  useEffect(() => {
-    if (authLoading || !ghUser) {
-      accountRef.current = ''
-      if (!authLoading) setAccountSync('idle')
-      return
-    }
-
-    const login = ghUser.login
-    if (accountRef.current === login) return
-    accountRef.current = login
-    let active = true
-    setAccountSync('loading')
-
-    const restore = async () => {
-      try {
-        const cached = readAccountCache()[login]
-        if (cached) {
-          if (typeof cached.color === 'string') {
-            setBackground(cached.color, typeof cached.intensity === 'number' ? cached.intensity : DEFAULT_INTENSITY)
-          }
-          if (cached.colorTheme) setColorTheme(cached.colorTheme)
-          if (isThemeMode(cached.mode)) setMode(cached.mode)
-          if (cached.animated) setAnimatedBackgroundPreference(cached.animated)
-        }
-
-        // 有尚未更新到仓库的偏好更改时，不用旧的远程版本覆盖本地/队列中的新设置。
-        const hasPending = getUpdateQueue().some(
-          (item) => item.kind === 'settings-sync' && item.target === backgroundSettingsPath(login),
-        )
-        if (hasPending) {
-          if (active) setAccountSync('queued')
-          return
-        }
-
-        const remote = await fetchGithubBackgroundPreference(login)
-        if (!active) return
-        if (remote) {
-          setBackground(remote.color, remote.intensity)
-          if (!active) return
-          if (remote.colorTheme) setColorTheme(remote.colorTheme)
-          if (isThemeMode(remote.themeMode)) setMode(remote.themeMode)
-          if (remote.animatedBackground) setAnimatedBackgroundPreference(remote.animatedBackground)
-          writeAccountCache(login, {
-            color: remote.color,
-            intensity: remote.intensity,
-            updatedAt: remote.updatedAt,
-            colorTheme: remote.colorTheme,
-            mode: remote.themeMode,
-            animated: remote.animatedBackground
-              ? {
-                  scene: remote.animatedBackground.scene as AnimatedBackgroundPreference['scene'],
-                  values: remote.animatedBackground.values as AnimatedBackgroundPreference['values'],
-                }
-              : undefined,
-          })
-        }
-        setAccountSync('synced')
-      } catch {
-        if (active) setAccountSync('error')
-      }
-    }
-
-    void restore()
-    return () => {
-      active = false
-    }
-  }, [authLoading, canPublish, ghUser, setBackground, setColorTheme, setMode])
-
-  const saveForGithub = useCallback(async () => {
-    if (!canPublish || !ghUser) throw new Error('请先登录并连接具备 Contents 写入权限的 GitHub 账号')
-    // 更新仓库的操作先加入待更新队列，由内容管理统一更新。
-    // 配色主题、明暗模式、渐变背景与动态背景写在同一份账号外观偏好里。
-    const file = buildBackgroundPreferenceFile(ghUser.login, {
-      color: background.color,
-      intensity: background.intensity,
-      colorTheme,
-      themeMode: mode,
-      animatedBackground: {
-        scene: animatedBackground.scene,
-        values: animatedBackground.values as Record<string, Record<string, number>>,
-      },
-      updatedAt: Date.now(),
-    })
-    enqueueSettingsSync(
-      file.path,
-      `同步 @${ghUser.login} 的配色主题、明暗模式、背景与动态背景`,
-      file.text,
-    )
-    writeAccountCache(ghUser.login, {
-      ...background,
-      colorTheme,
-      mode,
-      animated: animatedBackground,
-    })
-    setAccountSync('queued')
-  }, [background, canPublish, ghUser, colorTheme, mode, animatedBackground])
-
   const value = useMemo(
-    () => ({ background, accountSync, setBackground, resetBackground, saveForGithub }),
-    [background, accountSync, setBackground, resetBackground, saveForGithub],
+    () => ({ background, setBackground, resetBackground }),
+    [background, setBackground, resetBackground],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
