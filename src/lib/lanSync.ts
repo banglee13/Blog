@@ -42,6 +42,15 @@ export interface LanPeer {
   at: number
 }
 
+/** 中心 `GET /api/rooms` 列出的房间摘要。 */
+export interface LanRoomSummary {
+  code: string
+  name: string
+  rev?: number
+  peers?: number
+  chars?: number
+}
+
 export interface LanTransport {
   request<T>(path: string, init?: { method?: 'GET' | 'POST'; body?: unknown }): Promise<T>
   /** 订阅一个事件流路径（如 `/api/events?room=x`），返回取消函数 */
@@ -61,6 +70,9 @@ export interface LanDocState {
   rev: number
   blocks: LanBlock[]
   peers: LanPeer[]
+  /** 中心给这个房间定的 6 位房间码（新建房间时由中心生成） */
+  code?: string
+  name?: string
 }
 
 export interface LanSessionHandlers {
@@ -86,6 +98,8 @@ const DEFAULT_RETRY_MS = 3000
 export interface LanSession {
   /** 载入初始文本（加入房间前 / 载入本地草稿时） */
   seed(text: string): void
+  /** 中心回报的房间码（join / state 的响应里带；没连上时为 null） */
+  getRoomCode(): string | null
   /** 编辑器内容变化时调用；内部按 quietMs 去抖 */
   pushLocalText(text: string): void
   /** 立刻把当前文本发出去（失焦、手动保存时） */
@@ -109,6 +123,7 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
 
   let blocks: LanBlock[] = []
   let rev = 0
+  let roomCode: string | null = null
   /** 上次与中心一致的文本：本地差异都以它为基线计算 */
   let baseline = ''
   /**
@@ -156,9 +171,10 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
   }
 
   const adopt = (state: LanDocState) => {
-    blocks = resequence(state.blocks)
+    blocks = resequence(Array.isArray(state.blocks) ? state.blocks : [])
     rev = state.rev
-    handlers.onPeers(state.peers)
+    if (typeof state.code === 'string' && state.code) roomCode = state.code
+    handlers.onPeers(Array.isArray(state.peers) ? state.peers : [])
   }
 
   const schedule = (fn: () => void, delay: number) => {
@@ -341,10 +357,105 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
         .request('/api/leave', { method: 'POST', body: { room, name } })
         .catch(() => undefined)
     },
+    getRoomCode() {
+      return roomCode
+    },
     getStatus() {
       return status
     },
   }
+}
+
+/* ------------------------------ 房间码与自动发现 ------------------------------ */
+
+/** 只认 6 位数字；`483-902`、`483 902`、`483902` 都算同一个码，其余返回空串。 */
+export function normalizeRoomCode(value: unknown): string {
+  const digits = String(value ?? '').replace(/\D/g, '')
+  return digits.length === 6 ? digits : ''
+}
+
+/** 展示形式：483902 → 483-902。 */
+export function formatRoomCode(value: unknown): string {
+  const digits = normalizeRoomCode(value)
+  return digits ? `${digits.slice(0, 3)}-${digits.slice(3)}` : ''
+}
+
+export interface LanInvite {
+  /** 中心地址；只有链接里显式写了 hub 时才有值 */
+  hub: string
+  /** 房间码或房间名（原样保留，交给中心去认） */
+  room: string
+  code: string
+}
+
+/**
+ * 解析「加入链接」里的查询串。
+ *
+ * 链接形如 `http://192.168.1.20:8787/#/toolbox/lan?room=483-902`：离线版用 HashRouter，
+ * 查询串在 hash 里，所以 `location.search` 是空的 —— 这里两种都吃（传入整串或带 ? 前缀都行）。
+ * `hub` 允许省略：页面本身就由中心发出时，当前站点就是答案。
+ */
+export function parseLanInvite(raw: string): LanInvite | null {
+  if (typeof raw !== 'string') return null
+  const query = raw.replace(/^.*?\?/, '').trim()
+  if (!query || !/[?&]?(room|code|hub)=/i.test(raw)) return null
+  let params: URLSearchParams
+  try {
+    params = new URLSearchParams(query)
+  } catch {
+    return null
+  }
+  const room = (params.get('room') ?? params.get('code') ?? '').trim()
+  const hubRaw = (params.get('hub') ?? '').trim()
+  const code = normalizeRoomCode(room)
+  if (!code && !room && !hubRaw) return null
+  return { hub: hubRaw, room: room || '', code }
+}
+
+/**
+ * 该去哪些地址找中心：手填 > 当前站点（页面就是中心发出来的）> 本机连过的。
+ *
+ * 顺序是有意的：手填最明确；当前站点在「用中心发的链接打开」时 100% 命中；
+ * 记忆列表按最近使用排在前面。`file://` 打开的离线文件没有 origin 可用，此时只剩记忆与手填。
+ */
+export function hubCandidates(input: { manual?: string; currentOrigin?: string; history?: string[] }): string[] {
+  const out: string[] = []
+  const push = (value?: string) => {
+    const trimmed = (value ?? '').trim().replace(/\/+$/, '')
+    if (!trimmed) return
+    if (trimmed === 'null' || trimmed === 'file://') return
+    if (!/^https?:\/\//i.test(trimmed)) return
+    if (!out.includes(trimmed)) out.push(trimmed)
+  }
+  push(input.manual)
+  push(input.currentOrigin)
+  for (const item of input.history ?? []) push(item)
+  return out
+}
+
+/**
+ * 在候选中心里找「有这个房间码」的那一台。
+ *
+ * 只做只读的 `GET /api/rooms?code=`：中心没有这个房间时返回空列表（也不会顺手建），
+ * 所以扫错地址、扫到没跑协作的机器（fetch 抛错）都直接跳过，不会有任何副作用。
+ */
+export async function discoverHub(
+  code: string,
+  candidates: string[],
+  probe: (url: string) => Promise<{ rooms?: LanRoomSummary[] }>,
+): Promise<{ hub: string; room: LanRoomSummary } | null> {
+  const digits = normalizeRoomCode(code)
+  if (!digits) return null
+  for (const hub of candidates) {
+    try {
+      const payload = await probe(`${hub}/api/rooms?code=${digits}`)
+      const hit = (payload?.rooms ?? []).find((room) => normalizeRoomCode(room.code) === digits)
+      if (hit) return { hub, room: hit }
+    } catch {
+      // 这个地址不可达 / 不是中心：换下一个候选
+    }
+  }
+  return null
 }
 
 /** 浏览器实现：fetch + EventSource，全部指向用户自己填的局域网地址。 */

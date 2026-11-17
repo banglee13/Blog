@@ -3466,3 +3466,167 @@ test('issue #112：局域网协作的段落合并、会话去抖与中心协议�
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   assert.equal(pkg.scripts.hub, 'node scripts/offline-hub.mjs', '要有一条省心的启动命令')
 })
+
+test('issue #112 追加：房间码 + 中心自动发现（加入者只输 6 位数字）', async () => {
+  const { discoverHub, formatRoomCode, hubCandidates, normalizeHubUrl, normalizeRoomCode, parseLanInvite } =
+    lanSyncMod
+  const { createLanHub, lanInviteUrl } = lanHubMod
+
+  // 房间码：只认 6 位数字，展示时固定 3-3 分组
+  assert.equal(normalizeRoomCode('483-902'), '483902')
+  assert.equal(normalizeRoomCode(' 483 902 '), '483902')
+  assert.equal(normalizeRoomCode(483902), '483902')
+  assert.equal(formatRoomCode('483902'), '483-902')
+  for (const bad of ['', '12', '48390', '4839021', 'abc-abc', '机房协作']) {
+    assert.equal(normalizeRoomCode(bad), '', `${bad} 不是房间码`)
+  }
+
+  // 加入链接：查询串在 hash 里（HashRouter），hub 可以省略
+  const invite = parseLanInvite('hub=http%3A%2F%2F192.168.1.20%3A8787&room=483-902')
+  assert.deepEqual(invite, { hub: 'http://192.168.1.20:8787', room: '483-902', code: '483902' })
+  assert.equal(parseLanInvite('room=483902').hub, '', '链接里没写 hub 时留空，由页面用当前站点补')
+  assert.equal(parseLanInvite('tab=1'), null, '与本功能无关的查询串返回 null，免得乱自动连接')
+  assert.equal(parseLanInvite('?room=机房协作').code, '', '填的是房间名时 code 为空')
+  assert.equal(parseLanInvite('?room=机房协作').room, '机房协作')
+  assert.equal(parseLanInvite(''), null)
+  assert.equal(
+    lanInviteUrl('192.168.1.20', 8787, '483902'),
+    'http://192.168.1.20:8787/#/toolbox/lan?room=483-902',
+    '中心打印的链接必须能被路由直接接住',
+  )
+  assert.ok(
+    lanInviteUrl('192.168.1.20', 8787, '483902', { withHub: true }).includes('hub=http'),
+    '--with-hub 时才把中心地址也写进链接',
+  )
+
+  // 候选顺序：手填 > 当前站点 > 记忆；非 http 与重复都要被滤掉
+  assert.deepEqual(
+    hubCandidates({
+      manual: 'http://10.0.0.5:8787/',
+      currentOrigin: 'http://192.168.1.20:8787',
+      history: ['http://10.0.0.5:8787', 'http://nas.local:8787'],
+    }),
+    ['http://10.0.0.5:8787', 'http://192.168.1.20:8787', 'http://nas.local:8787'],
+  )
+  assert.deepEqual(
+    hubCandidates({ currentOrigin: 'file://', history: ['null', 'http://a:1', 'http://a:1'] }),
+    ['http://a:1'],
+    'file:// 打开的离线文件没有 origin 可用',
+  )
+
+  // 发现：不可达的候选跳过、没有这个码的候选跳过、命中就停
+  const probes = []
+  const found = await discoverHub('483-902', ['http://a:1', 'http://b:2', 'http://c:3'], async (url) => {
+    probes.push(url)
+    if (url.includes('//a:1')) throw new Error('连接被拒绝')
+    if (url.includes('//b:2')) return { ok: true, rooms: [{ code: '111222', name: '别人的房间' }] }
+    return { ok: true, rooms: [{ code: '483902', name: '机房协作', rev: 3, peers: 2 }] }
+  })
+  assert.equal(found.hub, 'http://c:3')
+  assert.equal(found.room.name, '机房协作')
+  assert.deepEqual(probes, ['http://a:1/api/rooms?code=483902', 'http://b:2/api/rooms?code=483902', 'http://c:3/api/rooms?code=483902'])
+  assert.equal(await discoverHub('', ['http://a:1'], async () => ({ rooms: [] })), null, '没填码不去乱猜')
+  assert.equal(await discoverHub('999999', [], async () => ({ rooms: [] })), null)
+
+  /* ---- 中心侧：启动就把房间建好、按码加入、错码 404 ---- */
+  const { server, rooms } = createLanHub({
+    code: '483902',
+    room: '机房四人',
+    file: join(root, 'offline/index.html'),
+    onLog: () => {},
+  })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const api = async (path, payload) => {
+    const res = await fetch(base + path, payload ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) } : undefined)
+    const json = await res.json().catch(() => ({}))
+    return { status: res.status, json }
+  }
+  try {
+    // 房间是启动时就存在的（否则加入者扫描时会「谁都没有」）
+    const listed = await api('/api/rooms')
+    assert.equal(listed.status, 200)
+    const mine = listed.json.rooms.find((item) => item.code === '483902')
+    assert.ok(mine, '启动参数里的 --code 要真的用上')
+    assert.equal(mine.name, '机房四人')
+    assert.equal(typeof mine.chars, 'number')
+    const filtered = await api('/api/rooms?code=483902')
+    assert.deepEqual(filtered.json.rooms.map((item) => item.code), ['483902'])
+    assert.deepEqual((await api('/api/rooms?code=123456')).json.rooms, [], '只查不建')
+    assert.equal((await api('/api/rooms?code=abc')).status, 200, '非数字 code 也不报错，返回全量')
+
+    const joined = await api('/api/join', { code: '483902', name: '乙' })
+    assert.equal(joined.status, 200)
+    assert.equal(joined.json.code, '483902', '快照要带房间码，页面才知道显示什么')
+    assert.ok(joined.json.peers.some((peer) => peer.name === '乙'))
+    assert.equal((await api('/api/join', { code: '999999', name: '丙' })).status, 404, '错码不能凭空开出新房间')
+
+    // 6 位数字当房间名提交时会沿用这个码；其他名字则自动分配一个
+    const byName = await api('/api/join', { room: '机房四人', name: '甲' })
+    assert.equal(byName.json.code, '483902', '同一个房名要落回同一个房间')
+    const fresh = await api('/api/join', { room: '另一个房间', name: '甲' })
+    assert.match(fresh.json.code, /^[1-9]\d{5}$/, '新房间自动分配 6 位码')
+    assert.notEqual(fresh.json.code, '483902')
+    const byCodeName = await api('/api/join', { room: '135-790', name: '甲' })
+    assert.equal(byCodeName.json.code, '135790', '把码当房名填也不该换码')
+    assert.equal(byCodeName.json.name, '房间 135-790')
+
+    // state / leave 都认房间码
+    const state = await api('/api/state?code=135790')
+    assert.equal(state.json.code, '135790')
+    const left = await api('/api/leave', { code: '135790', name: '甲' })
+    assert.equal(left.json.ok, true)
+    assert.ok(!(await api('/api/state?code=135790')).json.peers.some((peer) => peer.name === '甲'), '离开后不再算在线')
+
+    // 中心给的码与 --code 冲突时不会撞车
+    const taken = await api('/api/join', { room: '483902', name: '甲' })
+    assert.equal(taken.json.code, '483902', '已存在的码直接复用同一个房间')
+    // 房间表是模块级的（同一进程里多个中心实例共用），所以按名字核对而不是数总量
+    assert.equal(rooms.get('机房四人').code, '483902')
+    assert.match(rooms.get('另一个房间').code, /^[1-9]\d{5}$/, '没指定码时随机分配')
+    assert.equal(rooms.get('135-790').code, '135790', '码当房名提交时同一个房间，不再新建')
+  } finally {
+    server.closeAllConnections?.()
+    await new Promise((resolvePromise) => server.close(() => resolvePromise(null)))
+  }
+
+  // 会话层要把中心的房间码透出来（页面靠它显示大号房间码）
+  assert.equal(
+    await createSessionWithCode(lanSyncMod, '483902'),
+    '483-902',
+    'session.getRoomCode() 要能在 join 之后拿到中心给的码，页面才知道显示什么',
+  )
+
+  /* ---- 静态约定：页面以房间码为主入口，中心地址降为兜底 ---- */
+  const lanPage = readFileSync(join(root, 'src/pages/LanEdit.tsx'), 'utf8')
+  assert.ok(lanPage.includes('discoverHub'), '页面要先做中心自动发现')
+  assert.ok(lanPage.includes('parseLanInvite'), '要能直接吃中心打印的加入链接')
+  assert.ok(lanPage.includes('starlog:lan-hubs'), '连过的中心要记住')
+  assert.ok(lanPage.includes('复制加入链接'), '发起者要能一键把链接发出去')
+  assert.ok(lanPage.includes('<details'), '手填地址收进「高级」里，不做默认路径')
+  const hubSrc = readFileSync(join(root, 'scripts/offline-hub.mjs'), 'utf8')
+  assert.ok(hubSrc.includes('--open') && hubSrc.includes('--code'), '帮助里要写清这两个参数')
+  assert.ok(hubSrc.includes('spawn'), '--open 用系统默认浏览器打开')
+  assert.ok(hubSrc.includes('formatRoomCode(room.code)'), '启动横幅要打印房间码')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  assert.equal(pkg.scripts.hub, 'node scripts/offline-hub.mjs')
+})
+
+/** 会话层拿中心房间码的最小验证（不真起进程，用假 transport）。 */
+async function createSessionWithCode(lanSync, code) {
+  const transport = {
+    async request(path) {
+      if (path === '/api/join') return { rev: 0, code, name: '机房四人', blocks: [], peers: [] }
+      return { rev: 0, code, name: '机房四人', blocks: [], peers: [] }
+    },
+    subscribe() {
+      return () => {}
+    },
+  }
+  const session = lanSync.createLanSession(
+    { room: code, name: '甲', handlers: { onText: () => {}, onStatus: () => {}, onPeers: () => {} }, quietMs: 1 },
+    transport,
+  )
+  await session.join()
+  return lanSync.formatRoomCode(session.getRoomCode())
+}

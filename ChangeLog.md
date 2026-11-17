@@ -104,6 +104,33 @@
 - 会话层用「迷你中心」验证去抖窗口内不发包、窗口结束只发一条、输入期间不被远端顶掉、冲刷后把远端段落并回来。
 - `npm run build:offline` 通过：产物里没有任何公网端点，协作所需的地址完全由用户自己填。
 
+### 追加：加入者只输 6 位房间码（同日反馈）
+
+「局域网协作能不能双方只输房间号，不用填 IP」——浏览器不能监听端口、收不到局域网广播，也拿不到自己的网段
+（WebRTC 的 host candidate 在 Chrome / Firefox 里被 mDNS 混淆），所以发起者那一条命令省不掉；
+能做到的是把**加入方**压到只输 6 位数字：
+
+- `scripts/offline-hub.mjs`：每个房间一个 6 位**房间码**（`483902` 存、`483-902` 展示），随机生成且避开已用值；
+  `--code` 可指定、`--room` 可命名，两者能同时生效。新增只读路由 `GET /api/rooms[?code=]`，
+  `POST /api/join` 支持 `{ code }` 且**只接受已存在的房间**（错码 404，不凭空开房间），`leave` / `state` 也认码；
+  快照与 SSE 首帧带上 `code` / `name`。默认房间在**启动时**就建好 —— 房间若等第一次 join 才懒创建，
+  加入者扫描时会「谁都没有」，只能退回手填地址。
+- 新增 `--open`：用系统默认浏览器直接打开 `http://<局域网 IP>:8787/#/toolbox/lan?room=483-902`
+  （`--with-hub` 才把中心地址一并写进链接），发起者一个字段都不用填；启动横幅打印房间码 / 房间名 / 加入链接。
+- `src/lib/lanSync.ts`：`normalizeRoomCode` / `formatRoomCode` / `parseLanInvite`（读 hash 里的查询串）/
+  `hubCandidates({ manual, currentOrigin, history })` / `discoverHub(code, candidates, probe)`；
+  `LanSession.getRoomCode()` 把中心给的码透出来。
+- `src/pages/LanEdit.tsx`：主输入框换成居中大号房间码（`inputMode="numeric"`），按
+  「手填地址 → 当前站点 → 本机连过的中心（localStorage `starlog:lan-hubs`，最多 5 条）」逐个探测
+  （单地址超时 1.2s，非 http 与重复自动滤掉），命中即加入；一个候选都没有时提示并展开手填框，
+  手填框收进「高级」`<details>`；连上之后显示大号房间码 + 中心地址 + 「复制加入链接」。
+  链接里带 `room` 时进页面自动连接，一个字段都不用填。
+- 文档：README 的「局域网协作」小节改写为「一条命令 + 6 位房间码」的流程并说明为什么那条命令省不掉；
+  `offline/README.md` 与 Release 说明的启动命令改成 `node starlog-offline-hub.mjs --open`。
+- 验证：`scripts/test-features.mjs` 新增用例覆盖码的归一化 / 格式化、非法码拒绝、加入链接解析、
+  候选顺序与去重、探测跳过不可达与无此码的中心、中心侧按码加入 / 错码 404 / 码与房名冲突时复用同一房间、
+  会话层能拿到中心返回的码，以及 `--open` / `--code` 与帮助文案的静态约定。
+
 
 ## 2026-11-17 · 背景可以换成图片：仓库目录 / 本机图片 + 固定在视口（#126）
 
