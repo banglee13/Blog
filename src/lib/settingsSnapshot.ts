@@ -116,11 +116,6 @@ export const SYNCED_SETTINGS: SyncedSettingSpec[] = [
     valid: isBoolean,
   },
   {
-    name: 'editorLineNumbers',
-    label: '编辑区行号',
-    valid: isBoolean,
-  },
-  {
     name: 'editorScrollPastEnd',
     label: '编辑区末尾留白',
     valid: isBoolean,

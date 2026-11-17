@@ -2913,11 +2913,12 @@ test('issue #129 & #130：设置快照只走 Discussion，仓库里不留任何�
 
   // 白名单：需求里点名的「颜色 / 字号」必须在内，凭据与本地数据必须在门外
   const names = SYNCED_SETTINGS.map((spec) => spec.name)
-  for (const required of ['font', 'background', 'backgroundImage', 'colorTheme', 'themeMode', 'animatedBackground', 'editorLineNumbers', 'repository']) {
+  for (const required of ['font', 'background', 'backgroundImage', 'colorTheme', 'themeMode', 'animatedBackground', 'repository']) {
     assert.ok(names.includes(required), `${required} 应当参与云同步`)
   }
-  for (const forbidden of ['token', 'gh-token', 'drafts', 'local-posts', 'update-queue', 'offlineBundle']) {
-    assert.ok(!names.includes(forbidden), `${forbidden} 绝不能被上传`)
+  // token / 草稿 / 本机文章这些绝不能上传；editorLineNumbers 是撤掉的功能，白名单里也不该留空位
+  for (const forbidden of ['token', 'gh-token', 'drafts', 'local-posts', 'update-queue', 'offlineBundle', 'editorLineNumbers']) {
+    assert.ok(!names.includes(forbidden), `${forbidden} 绝不能被同步`)
   }
   assert.equal(syncedSettingLabel('colorTheme'), '配色主题')
 
@@ -3052,36 +3053,14 @@ test('issue #126：背景图来源、白名单与铺法偏好', () => {
   assert.equal(resolved.enabled, false, 'config 里没填默认图时保持关闭（githubConfig.defaultBackgroundImage 为空）')
 })
 
-test('issue #127：行号度量与「末段可滚到顶」的留白算术', () => {
-  const { collectLineMetrics, computeScrollPastEndPadding, countTextLines, rebuildTextareaLineMirror } = scrollSyncMod
+test('issue #127：「末段可滚到顶」的留白算术（行号栏已按站长要求撤掉）', () => {
+  const { computeScrollPastEndPadding, countTextLines, rebuildTextareaLineMirror } = scrollSyncMod
 
-  // 行数口径：与 textarea 的换行符一致，行尾换行不多算一行
+  // 行数口径：状态栏的「N 行」与 textarea 的换行符一致，行尾换行也算一个真实可编辑的空行
   assert.equal(countTextLines(''), 1)
   assert.equal(countTextLines('a\nb'), 2)
-  assert.equal(countTextLines('a\nb\n'), 3, '行尾换行是一个真实可编辑的空行，行号要给它留一行')
+  assert.equal(countTextLines('a\nb\n'), 3, '行尾换行是一个真实可编辑的空行')
   assert.equal(countTextLines('a\r\nb'), 2, 'CRLF 要按一行算')
-
-  // 行号来自镜像层：一个被折成 3 屏上行的源码行仍然只有一个行号
-  // rebuildTextareaLineMirror() 写的是 data-l="1..n"（1 基），度量要原样对上
-  const mirror = {
-    children: [
-      { dataset: { l: '1' }, offsetTop: 0, offsetHeight: 28 },
-      { dataset: { l: '2' }, offsetTop: 28, offsetHeight: 84 },
-      { dataset: { l: '3' }, offsetTop: 112, offsetHeight: 28 },
-    ],
-  }
-  const metrics = collectLineMetrics(mirror)
-  assert.deepEqual(
-    metrics.map((item) => [item.line, item.top, item.height]),
-    [[1, 0, 28], [2, 28, 84], [3, 112, 28]],
-    '行号从 1 开始，且保持折行的真实高度',
-  )
-  assert.deepEqual(collectLineMetrics({ children: [] }), [], '空镜像不该抛异常')
-  // 脏数据（旧镜像残留 / 手改的 data-l）要整条跳过，不能把编号挪位
-  assert.deepEqual(
-    collectLineMetrics({ children: [{ dataset: { l: '0' }, offsetTop: 0, offsetHeight: 28 }, { dataset: {}, offsetTop: 0, offsetHeight: 0 }] }),
-    [],
-  )
 
   // 留白 = 视口高 - 一行行高 - 上内边距；不够长时为 0（不硬撑出空白）
   assert.equal(computeScrollPastEndPadding(600, 28, 20), 552)
@@ -3089,58 +3068,49 @@ test('issue #127：行号度量与「末段可滚到顶」的留白算术', () =
   assert.equal(computeScrollPastEndPadding(20, 28, 20), 0)
   assert.equal(computeScrollPastEndPadding(600, 0, 0), 0, '行高度量还没拿到时不加留白')
 
-  /* ---- 静态约定：编辑器确实把两样东西接到了 DOM 上 ---- */
+  /* ---- 静态约定：留白接在 DOM 上，镜像层仍是双栏联动的地基 ---- */
   const editorSrc = readFileSync(join(root, 'src/pages/Editor.tsx'), 'utf8')
-  assert.ok(editorSrc.includes('editor-gutter'), '编辑器要渲染行号栏容器')
-  assert.ok(editorSrc.includes('collectLineMetrics'), '行号来自共享镜像的度量')
   assert.ok(editorSrc.includes('computeScrollPastEndPadding'), '尾部留白走同一个算术函数')
   assert.ok(/paddingBottom/.test(editorSrc), '留白要写到 textarea 的 paddingBottom 上')
-  assert.ok(editorSrc.includes('useEditorLineNumbers') && editorSrc.includes('useEditorScrollPastEnd'), '开关要能在设置里控制')
-  const css = readFileSync(join(root, 'src/styles/index.css'), 'utf8')
-  assert.ok(/\.editor-gutter\s*\{/.test(css) && css.includes('.editor-gutter-line'), '行号栏样式要在样式表里')
-  assert.ok(css.includes('.editor-textarea-with-gutter'), '有行号时正文要给左栏让位')
-
-  /* ---- 行号栏的层必须拆开：裁剪留在不动的外壳上，平移发生在内层 ----
-   * 裁剪框是在元素自己的坐标系里算的，会跟着 transform 一起搬走。
-   * 若把 overflow/contain 写在外层 transform 的那个元素上，超出「一屏」的编号
-   * 会被永久裁掉，从第二屏起行号整栏消失（issue #127 的第一版就挂在这儿）。 */
-  // 规则内容要先去掉注释再比对：注释里写的「反例」（旧写法）不该被当成断言目标。
-  const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '')
-  const flatCss = stripComments(css)
-  const hostRule = flatCss.match(/\.editor-gutter-host\s*\{[^}]*\}/)?.[0] ?? ''
-  const gutterRule = flatCss.match(/\.editor-gutter\s*\{[^}]*\}/)?.[0] ?? ''
-  assert.ok(hostRule, '裁剪与底色要单独放在 .editor-gutter-host 上')
-  assert.ok(/overflow:\s*hidden/.test(hostRule), '裁剪要落在不动的外壳层')
-  assert.ok(/transform/.test(gutterRule), '平移的必须是内层 .editor-gutter')
-  assert.ok(!/overflow|contain:/.test(gutterRule), '内层不能再裁剪，否则滚出第一屏就没有行号')
-  // 外壳是靠左的一整列，不是「整行右边留白」——否则底色与分隔线会横穿编辑区。
-  assert.ok(/inset:\s*0\s+auto\s+0\s+0/.test(hostRule), '行号栏要钉在左侧')
-  assert.ok(!/width:\s*auto/.test(hostRule) || /width:\s*3\.25rem/.test(hostRule), '列宽要显式给出')
-  assert.ok(/width:\s*3\.25rem/.test(hostRule), '列宽要与 textarea 的让位量配对')
-  assert.ok(css.includes('dark .editor-gutter-host'), '深色下的底色与分隔线也归外壳层')
+  assert.ok(editorSrc.includes('useEditorScrollPastEnd'), '留白要能在设置里开关')
+  assert.ok(editorSrc.includes('rebuildTextareaLineMirror'), '按行定位仍要靠镜像层（textarea 不暴露行盒）')
+  assert.ok(/const invalidateMirror = useCallback/.test(editorSrc), '要有统一的镜像层作废入口')
   assert.ok(
-    /className="editor-gutter-host"[\s\S]{0,120}ref={gutterRef} className="editor-gutter"/.test(editorSrc),
-    'JSX 必须是「外壳包着平移层」的两层结构',
+    editorSrc.includes("addEventListener('starlog:settings-changed', invalidateMirror)"),
+    '换字体 / 改字号会改折行，设置变更时要作废重测（否则联动按旧行位置算）',
   )
-  // 折叠宽度变了（开关行号 / 换字体）时镜像层必须作废重测，否则编号按旧折行排。
-  assert.ok(/const invalidateLineMetrics = useCallback/.test(editorSrc), '要有统一的测量作废入口')
   assert.ok(
     /mirrorBuiltTextRef\.current = null[\s\S]{0,160}cachedMapperRef\.current = null/.test(editorSrc),
     '作废要同时清掉镜像层与滚动映射缓存',
   )
-  assert.ok(
-    /useEffect\(\(\) => \{\s*invalidateLineMetrics\(\)[\s\S]{0,320}lineNumbers\],\)\.\[/.test(editorSrc) ||
-      /, lineNumbers\)\]/.test(editorSrc) ||
-      /\}, \[invalidateLineMetrics, lineNumbers\]\)/.test(editorSrc),
-    '行号开关切换时要作废测量（它改了 textarea 的左内边距，折行宽度跟着变）',
-  )
+
+  /* ---- 行号栏要撤干净：半截接线（样式、开关、同步白名单、度量）都不该留下 ---- */
+  // 注释里允许提到旧写法，比对前先剥掉注释
+  const css = readFileSync(join(root, 'src/styles/index.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  for (const token of ['.editor-gutter', '.editor-textarea-with-gutter', 'editor-gutter-line']) {
+    assert.ok(!css.includes(token), `${token} 应随行号栏一起删掉`)
+  }
+  const leftovers = [
+    ['src/pages/Editor.tsx', 'lineNumbers'],
+    ['src/lib/editorSettings.ts', 'editorLineNumbers'],
+    ['src/pages/SettingsPage.tsx', '编辑区显示行号'],
+    ['src/lib/settingsSnapshot.ts', 'editorLineNumbers'],
+    ['src/lib/scrollSync.ts', 'collectLineMetrics'],
+  ]
+  for (const [file, needle] of leftovers) {
+    assert.ok(
+      !readFileSync(join(root, file), 'utf8').includes(needle),
+      `${file} 里不该残留 ${needle}：功能撤了就要连开关、样式与同步白名单一起撤`,
+    )
+  }
+
   const settingsSrc = readFileSync(join(root, 'src/pages/SettingsPage.tsx'), 'utf8')
-  for (const label of ['编辑区显示行号', '编辑区末尾留白', '双栏自动同步滚动']) {
+  for (const label of ['编辑区末尾留白', '双栏自动同步滚动']) {
     assert.ok(settingsSrc.includes(label), `设置页里应有「${label}」相关开关文案`)
   }
-  // 行号与留白都只是偏好，不进仓库：确认它们写在 settingsStore 的个人键上
+  // 留白与联动都只是偏好，不进仓库：写在 settingsStore 的个人键上
   const editorSettings = readFileSync(join(root, 'src/lib/editorSettings.ts'), 'utf8')
-  assert.ok(editorSettings.includes('useFlag'), '三个编辑器开关共用同一个开关工厂')
+  assert.ok(editorSettings.includes('useFlag'), '两个编辑器开关共用同一个开关工厂')
   assert.ok(!editorSettings.includes('api.github.com'), '开关只写本机，不直连任何接口')
   void rebuildTextareaLineMirror
 })

@@ -3,7 +3,7 @@
  *
  * 设计要点：
  * 1. 精确文本镜像（`rebuildTextareaLineMirror`）：完整复制 `<textarea>` 的计算盒模型、字体、字距、
- *    行高与折行规则，测量每一原始行号在编辑器文档中的精确像素区间 `[taTop, taBottom]`。
+ *    行高与折行规则，一个源码行一个 `data-l` 子块，据此得到每行在编辑器文档中的精确像素区间。
  * 2. 全层级可见块区间采样（`collectScrollSyncAnchors`）：
  *    - 递归穿透展开态 `<details open>` 折叠框、`<blockquote>`、`<ul>`/`<ol>`、`.table-tuack-wrapper`
  *      等容器，捕获内部每一个可见标题、段落、列表项、公式块、代码块、表格与交互组件的 `[startLine..endLine]`；
@@ -78,7 +78,7 @@ export function copyTextareaMirrorStyles(ta: HTMLTextAreaElement, mirror: HTMLEl
   mirror.style.wordBreak = cs.wordBreak || 'normal'
 }
 
-/** 重建 `<textarea>` 行号测量镜像，返回镜像构建时使用的 `clientWidth`。 */
+/** 重建 `<textarea>` 的按行测量镜像，返回镜像构建时使用的 `clientWidth`。 */
 export function rebuildTextareaLineMirror(
   ta: HTMLTextAreaElement,
   mirror: HTMLElement,
@@ -92,34 +92,6 @@ export function rebuildTextareaLineMirror(
     )
     .join('')
   return ta.clientWidth
-}
-
-/** 编辑区一行的像素位置（行号栏与滚动同步共用同一份镜像层测量结果）。 */
-export interface TextLineMetric {
-  /** 源码行号，从 1 开始 */
-  line: number
-  /** 该行在编辑文档中的顶部纵坐标（相对镜像层，已含 textarea 的上内边距） */
-  top: number
-  /** 该行占的高度：折行的视觉行数 × 行高，所以一行文字换行后不会把后面的编号顶歪 */
-  height: number
-}
-
-/**
- * 从 `rebuildTextareaLineMirror` 建好的镜像层读出每一行的位置。
- *
- * 行号栏必须按「折行后的真实高度」排版，否则一行长文本换行成 3 视觉行时，
- * 下面的编号会整体错位；这些数据只有镜像层能量出来（`<textarea>` 本身不暴露行盒）。
- */
-export function collectLineMetrics(mirror: HTMLElement): TextLineMetric[] {
-  const metrics: TextLineMetric[] = []
-  const children = mirror.children
-  for (let i = 0; i < children.length; i += 1) {
-    const el = children[i] as HTMLElement
-    const line = Number(el.dataset?.l)
-    if (!Number.isInteger(line) || line < 1) continue
-    metrics.push({ line, top: el.offsetTop, height: el.offsetHeight })
-  }
-  return metrics
 }
 
 /**

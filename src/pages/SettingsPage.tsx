@@ -59,7 +59,7 @@ import { getRepoTarget, setRepoTarget } from '../lib/github'
 import { getLocalPosts, serializePost } from '../lib/posts'
 import { STORAGE_KEYS } from '../lib/config'
 import { clearRememberedPostUnlocks } from '../lib/crypto'
-import { useEditorLineNumbers, useEditorScrollPastEnd, useEditorScrollSync } from '../lib/editorSettings'
+import { useEditorScrollPastEnd, useEditorScrollSync } from '../lib/editorSettings'
 import { OfflineSettingsCard } from '../components/OfflineSettingsCard'
 import { OFFLINE } from '../lib/runtime'
 
@@ -537,7 +537,6 @@ export default function SettingsPage() {
   const animatedBackground = useAnimatedBackground()
   const toast = useToast()
   const [editorScrollSync, setEditorScrollSync] = useEditorScrollSync()
-  const [editorLineNumbers, setEditorLineNumbers] = useEditorLineNumbers()
   const [editorScrollPastEnd, setEditorScrollPastEnd] = useEditorScrollPastEnd()
 
   const [repo, setRepo] = useState(getRepoTarget())
@@ -560,15 +559,6 @@ export default function SettingsPage() {
       onChange: setEditorScrollSync,
       onLabel: '点击关闭自动同步',
       offLabel: '点击开启自动同步',
-    },
-    {
-      name: 'lineNumbers',
-      title: '编辑区显示行号',
-      desc: '左侧行号栏按源码行编号，折行的长段落只占一个编号（与代码编辑器一致），方便对照文中提到的「第几行」。',
-      value: editorLineNumbers,
-      onChange: setEditorLineNumbers,
-      onLabel: '点击关闭行号',
-      offLabel: '点击开启行号',
     },
     {
       name: 'scrollPastEnd',

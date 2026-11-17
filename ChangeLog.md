@@ -19,7 +19,8 @@
 ### 新增
 
 - `src/lib/settingsSnapshot.ts`（纯函数层）：`SYNCED_SETTINGS` 白名单（`font`、`background`、`backgroundImage`、
-  `colorTheme`、`themeMode`、`animatedBackground`、`editorScrollSync`、`editorLineNumbers`、`editorScrollPastEnd`、`repository`），
+  `colorTheme`、`themeMode`、`animatedBackground`、`editorScrollSync`、`editorScrollPastEnd`、`repository`
+  （`editorLineNumbers` 曾短暂在列，随 #127 的行号栏一起撤掉了，见下面 #127 那节的「追加二」），
   每项带 `valid()` 校验；Discussion 正文 = 定位标记 + 说明 + JSON 代码块；单值超过 8000 字符直接**跳过并说明原因**
   （截断 JSON 会连累整份快照）；`mergeRemoteSettings()` 按**每一项**的最后修改时间决定「用远端 / 保留本机」。
 - `src/lib/settingsSync.tsx`：`SettingsSyncProvider`。监听 `starlog:settings-changed`，停止操作 4 秒后自动上行；
@@ -177,6 +178,10 @@
 
 ## 2026-11-17 · 编辑器行号栏与「末段可滚到顶」（#127）
 
+> ⚠️ 本节第一版的「编辑区显示行号」在同一天被整体撤掉（站长决定，见本节末尾的「追加二」）：
+> 下面「新增 / 调整」里凡是提到行号栏、`.editor-gutter*`、`collectLineMetrics` 的部分都已不存在，
+> 「末段可滚到顶」与行镜像层保留。
+
 | 模型信息 | |
 | --- | --- |
 | 模型名称 | Arena.ai Agent Mode（平台多模型动态调度，包括但不限于 Claude、ChatGPT、Gemini、Grok、Qwen、Kimi 等） |
@@ -231,6 +236,25 @@
 - 测试：#127 用例现在从样式表里把两条规则解析出来做结构断言（先剥掉注释，免得注释里的「反例」被当成断言目标）：
   裁剪必须在 host 上、内层必须有 `transform` 且不得出现 `overflow` / `contain:`、host 必须是靠左定宽列，
   再加 JSX 的「外壳包平移层」结构与 `invalidateLineMetrics` 的两处接线。
+
+### 追加二：行号栏整体撤掉（站长决定）
+
+修完还是决定不要了 —— `<textarea>` 不暴露行盒，编号只能靠隐藏镜像层量，折行宽度 / 字体加载时机 /
+内边距任一没对上就整栏错位，换来的只是「对照第几行」，性价比不对。这一版把接线删干净：
+
+- `src/pages/Editor.tsx`：删掉行号栏 DOM、`gutterRef`、`lineMetrics` 与那条测量 effect；`needsMirror`
+  回到只看「双栏 + 联动」。`invalidateLineMetrics()` 改名 `invalidateMirror()`，保留「字体/字号变化后作废镜像层」
+  这一条（`starlog:settings-changed` 与 `document.fonts.ready` 都走它）—— 联动映射同样依赖折行，不能省。
+- `src/lib/editorSettings.ts`：删 `read/write/useEditorLineNumbers`，文件头记下这次撤销与原因；
+  `src/pages/SettingsPage.tsx` 删掉「编辑区显示行号」开关；`src/lib/settingsSnapshot.ts` 从云同步白名单里摘掉
+  `editorLineNumbers`（PR 未合并，线上不存在旧数据，无需迁移）。
+- `src/lib/scrollSync.ts`：删掉只服务于行号栏的 `TextLineMetric` / `collectLineMetrics()`；
+  `rebuildTextareaLineMirror()` 保留（双栏联动仍按 `data-l` 定位），`countTextLines()` 也保留（状态栏的总行数）。
+- `src/styles/index.css`：`.editor-gutter*` 与 `.editor-textarea-with-gutter` 整节删除，原位留一段说明，
+  避免以后有人照着旧提交把半截接回来。
+- 测试：#127 用例改成盯「留白算术 + 镜像层作废 + 已撤干净」——样式表里不许再有 `.editor-gutter*`（比对前剥掉注释），
+  五个源文件里不许残留 `lineNumbers` / `editorLineNumbers` / `collectLineMetrics`，云同步白名单里也不许有
+  `editorLineNumbers`；#129/#130 用例的白名单断言同步调整。
 
 
 ## 2026-11-17 · 页面跳转不再左右抖动，首屏少下一大块代码（#128）

@@ -4,6 +4,9 @@ import { readPersonalSetting, writePersonalSetting } from './settingsStore'
 /**
  * 编辑器相关的个人偏好（issue #101 / #127）。
  *
+ * 注：issue #127 还提过「编辑区显示行号」，做过一版左侧行号栏后由站长决定撤掉
+ * （`textarea` 拿不到行盒，只能靠镜像层量，折行与字体加载时机都容易让编号与文字错位）。
+ *
  * 这些开关都写在集中的账号偏好里（`settingsStore`），所以：
  *   · 其他标签页与设置页改完，正在写作的编辑器立刻跟上；
  *   · 登录状态下会被「账号设置自动同步」一起带到 GitHub 账号（issue #129）。
@@ -55,19 +58,6 @@ export function writeEditorScrollSync(enabled: boolean) {
 
 export function useEditorScrollSync(): [enabled: boolean, setEnabled: (enabled: boolean) => void] {
   return useFlag({ key: 'editorScrollSync', fallback: true })
-}
-
-/** 编辑区左侧行号栏（issue #127）。 */
-export function readEditorLineNumbers(): boolean {
-  return readFlag({ key: 'editorLineNumbers', fallback: true })
-}
-
-export function writeEditorLineNumbers(enabled: boolean) {
-  writePersonalSetting('editorLineNumbers', enabled)
-}
-
-export function useEditorLineNumbers(): [enabled: boolean, setEnabled: (enabled: boolean) => void] {
-  return useFlag({ key: 'editorLineNumbers', fallback: true })
 }
 
 /**

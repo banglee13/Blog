@@ -47,8 +47,6 @@ import { useAuth } from '../lib/auth'
 import { requestHeaderYieldRefresh } from '../lib/headerYield'
 import {
   type BidirectionalScrollMapper,
-  type TextLineMetric,
-  collectLineMetrics,
   collectScrollSyncAnchors,
   computeScrollPastEndPadding,
   countTextLines,
@@ -90,7 +88,7 @@ import { focusWithoutScroll, restoreCaret } from '../lib/caret'
 import { latexSymbolInsert, type LatexSymbol } from '../lib/latexSymbols'
 import { handleEditorKey, insertBlock, toggleLinePrefix, toggleWrap } from '../lib/editor'
 import type { EditAction } from '../lib/editor'
-import { useEditorLineNumbers, useEditorScrollPastEnd, useEditorScrollSync } from '../lib/editorSettings'
+import { useEditorScrollPastEnd, useEditorScrollSync } from '../lib/editorSettings'
 import { useRepoTarget } from '../lib/useRepoTarget'
 import type { Post } from '../lib/types'
 
@@ -209,8 +207,7 @@ export default function Editor() {
   const [metaOpen, setMetaOpen] = useState(!existing)
   const [fullscreen, setFullscreen] = useState(false)
   const [scrollSync] = useEditorScrollSync()
-  // issue #127：编辑区行号栏，以及「可以一直下滑到最后一行停在编辑区最上方」的末尾留白
-  const [lineNumbers] = useEditorLineNumbers()
+  // issue #127：「可以一直下滑到最后一行停在编辑区最上方」的末尾留白
   const [scrollPastEnd] = useEditorScrollPastEnd()
   const [dirty, setDirty] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(existing?.savedAt ?? null)
@@ -247,16 +244,14 @@ export default function Editor() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const gutterRef = useRef<HTMLDivElement>(null)
   /**
    * 末尾留白高度（px）。滚动映射要把它从「文档总高」里扣掉（它不是内容），
    * 所以同时存一份 ref：让 ensureScrollMapper 读到最新值而不必把它放进依赖数组。
    */
   const tailPadRef = useRef(0)
   const [tailPad, setTailPad] = useState(0)
-  const [lineMetrics, setLineMetrics] = useState<TextLineMetric[]>([{ line: 1, top: 0, height: 0 }])
-  /** 镜像层是否为当前某个功能所需（双栏同步滚动 or 行号栏）。 */
-  const needsMirror = (view === 'split' && scrollSync) || lineNumbers
+  /** 镜像层是否为当前某个功能所需（目前只有双栏同步滚动按行定位）。 */
+  const needsMirror = view === 'split' && scrollSync
 
   const tags = useMemo(
     () =>
@@ -1023,7 +1018,8 @@ export default function Editor() {
   /**
    * 保证隐藏镜像层与「当前文本 + 当前宽度」一致，并返回它。
    *
-   * 行号栏与双栏滚动同步共用同一份测量：谁先需要谁付重建的代价，另一处直接捡现成的。
+   * 双栏滚动同步按「源码行 → 像素区间」对齐，测量结果在这里缓存一份：
+   * 谁先需要谁付重建的代价（输入过程中同一个文本 + 宽度只重建一次）。
    */
   const ensureMirror = useCallback((): HTMLDivElement | null => {
     const ta = textareaRef.current
@@ -1039,12 +1035,12 @@ export default function Editor() {
   /**
    * 让镜像层与滚动映射的缓存作废。
    *
-   * 折行结果取决于「文本 + 宽度 + 左内边距 + 字体」，而 `ensureMirror` 只能察觉前两项：
-   * 打开行号会把 textarea 的 `padding-left` 从 1.25rem 推到 3.5rem（可用宽度少 36px），
-   * 设置里换字体 / 云端字体加载完成则改行高与字宽。这些时刻不重测，编号就会按旧的折行
-   * 位置排，越往下越歪 —— 所以凡是动了这几项的地方都要显式叫它作废。
+   * 折行结果取决于「文本 + 宽度 + 左内边距 + 字体」，而 `ensureMirror` 只察觉前两项：
+   * 设置里换字体、改字号，或云端字体刚加载完成，都会动到行高与字宽。这些时刻不重测，
+   * 双栏联动就会按旧的行位置算 —— 所以凡是动了这几项的地方都要显式叫它作废，
+   * 下一次用到映射时（滚动或空闲预热）自然重建。
    */
-  const invalidateLineMetrics = useCallback(() => {
+  const invalidateMirror = useCallback(() => {
     mirrorBuiltTextRef.current = null
     cachedMapperRef.current = null
     anchorsDirtyRef.current = true
@@ -1143,48 +1139,11 @@ export default function Editor() {
   /** 内容、延迟渲染正文、视图或尺寸变化后，标记锚点需重算。 */
   useEffect(() => {
     anchorsDirtyRef.current = true
-  }, [content, deferredContent, view, scrollSync, fullscreen, lineNumbers, tailPad])
+  }, [content, deferredContent, view, scrollSync, fullscreen, tailPad])
 
-  /* ---------------------- 行号栏与末尾留白（issue #127） ----------------------
-   * 两者都依赖镜像层的真实行高：行号要按折行后的视觉高度定位，末尾留白要按视口高度
-   * 与一行的高度算差值。测量都走 ensureMirror 的同一份结果，输入过程中也只重建一次。
+  /* ------------------------- 末尾留白（issue #127） -------------------------
+   * 留白要按视口高度与一行的高度算差值；测量与双栏联动共用 ensureMirror 的同一份结果。
    * -------------------------------------------------------------------------- */
-  useEffect(() => {
-    if (!lineNumbers) {
-      setLineMetrics([{ line: 1, top: 0, height: 0 }])
-      return
-    }
-    const ta = textareaRef.current
-    if (!ta) return
-    let frame = 0
-    const measure = () => {
-      frame = 0
-      const mirror = ensureMirror()
-      if (!mirror) return
-      setLineMetrics(collectLineMetrics(mirror))
-      if (gutterRef.current) gutterRef.current.style.transform = `translateY(${-ta.scrollTop}px)`
-    }
-    const schedule = () => {
-      if (frame) cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(measure)
-    }
-    measure()
-    const observer =
-      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(schedule) : null
-    observer?.observe(ta)
-    const onScroll = () => {
-      if (gutterRef.current) gutterRef.current.style.transform = `translateY(${-ta.scrollTop}px)`
-    }
-    ta.addEventListener('scroll', onScroll, { passive: true })
-    window.addEventListener('resize', schedule)
-    return () => {
-      if (frame) cancelAnimationFrame(frame)
-      observer?.disconnect()
-      ta.removeEventListener('scroll', onScroll)
-      window.removeEventListener('resize', schedule)
-    }
-  }, [lineNumbers, ensureMirror, deferredContent, view, fullscreen])
-
   /** 末尾留白：让最后一行能滚到编辑区顶部；关闭时留白为 0，行为与原来一致。 */
   useEffect(() => {
     const ta = textareaRef.current
@@ -1265,25 +1224,19 @@ export default function Editor() {
   useEffect(() => {
     let active = true
     document.fonts?.ready.then(() => {
-      if (active) invalidateLineMetrics()
+      if (active) invalidateMirror()
     })
     return () => {
       active = false
     }
-  }, [invalidateLineMetrics])
+  }, [invalidateMirror])
 
-  /*
-   * 测量缓存的两个失效时机：
-   *   · 行号开关本身（textarea 的左内边距变了，可用宽度就变了）；
-   *   · 任何偏好变化（`starlog:settings-changed`：字体、字号都会改行高与折行）。
-   * 重建由「行号栏」那个 effect 负责（它依赖 lineNumbers / deferredContent，会立刻 measure 一次），
-   * 这里只负责让缓存失效，不在这里做布局测量。
-   */
+  // 任何偏好变化都可能改行高与折行（字体、字号），这里只让缓存失效，不在这个时机做布局测量。
   useEffect(() => {
-    invalidateLineMetrics()
-    window.addEventListener('starlog:settings-changed', invalidateLineMetrics)
-    return () => window.removeEventListener('starlog:settings-changed', invalidateLineMetrics)
-  }, [invalidateLineMetrics, lineNumbers])
+    invalidateMirror()
+    window.addEventListener('starlog:settings-changed', invalidateMirror)
+    return () => window.removeEventListener('starlog:settings-changed', invalidateMirror)
+  }, [invalidateMirror])
 
   // 全屏时按 Esc 退出（输入法组合键中的 Esc 用于取消候选，不退出全屏；
   // 符号选择框或其它对话框开着时 Esc 只关闭当前弹层，不连带退出全屏）。
@@ -1697,7 +1650,6 @@ export default function Editor() {
               <span className="hidden sm:inline">
                 {words} 字 · 约 {readingMinutes} 分钟
               </span>
-              {/* issue #127：行号栏开着时行号写在这一栏里；关闭时这里也给出总行数 */}
               <span className="hidden font-mono sm:inline" title="编辑区当前行数">
                 {lineCount} 行
               </span>
@@ -1726,26 +1678,6 @@ export default function Editor() {
           >
             {view !== 'preview' && (
               <div className="relative min-h-0 overflow-hidden">
-                {/*
-                  行号栏（issue #127）：数字位置来自镜像层的真实行高测量。
-                  外壳负责裁剪与底色，内层用 transform 跟随编辑区滚动 —— 两层必须分开，
-                  否则裁剪框会跟着平移，第二屏之后的编号就再也看不到了。
-                */}
-                {lineNumbers && (
-                  <div className="editor-gutter-host" aria-hidden="true">
-                    <div ref={gutterRef} className="editor-gutter">
-                      {lineMetrics.map((metric) => (
-                        <span
-                          key={metric.line}
-                          className="editor-gutter-line"
-                          style={{ top: metric.top, height: metric.height || undefined }}
-                        >
-                          {metric.line}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 <textarea
                   ref={textareaRef}
                   value={content}
@@ -1764,13 +1696,11 @@ export default function Editor() {
                   spellCheck={false}
                   placeholder="在这里用 Markdown 写作…"
                   style={tailPad ? { paddingBottom: `${tailPad + 20}px` } : undefined}
-                  className={`editor-textarea h-full w-full resize-none bg-transparent p-5 font-mono text-[14px] text-ink-800 outline-none placeholder:text-ink-400 dark:text-ink-100 ${
-                    lineNumbers ? 'editor-textarea-with-gutter' : ''
-                  }`}
+                  className="editor-textarea h-full w-full resize-none bg-transparent p-5 font-mono text-[14px] text-ink-800 outline-none placeholder:text-ink-400 dark:text-ink-100"
                 />
                 {/*
-                  隐藏镜像层：与 textarea 同字体同宽度，用来测量每一行的像素位置。
-                  双栏滚动同步（issue #101）与行号栏（issue #127）共用这一层，任一需要就得渲染。
+                  隐藏镜像层：与 textarea 同字体同宽度，用来测量每一行的像素位置
+                  （<textarea> 本身不暴露行盒）。双栏滚动同步（issue #101）要靠它对齐。
                 */}
                 {needsMirror && (
                   <div
