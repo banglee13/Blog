@@ -3099,6 +3099,41 @@ test('issue #127：行号度量与「末段可滚到顶」的留白算术', () =
   const css = readFileSync(join(root, 'src/styles/index.css'), 'utf8')
   assert.ok(/\.editor-gutter\s*\{/.test(css) && css.includes('.editor-gutter-line'), '行号栏样式要在样式表里')
   assert.ok(css.includes('.editor-textarea-with-gutter'), '有行号时正文要给左栏让位')
+
+  /* ---- 行号栏的层必须拆开：裁剪留在不动的外壳上，平移发生在内层 ----
+   * 裁剪框是在元素自己的坐标系里算的，会跟着 transform 一起搬走。
+   * 若把 overflow/contain 写在外层 transform 的那个元素上，超出「一屏」的编号
+   * 会被永久裁掉，从第二屏起行号整栏消失（issue #127 的第一版就挂在这儿）。 */
+  // 规则内容要先去掉注释再比对：注释里写的「反例」（旧写法）不该被当成断言目标。
+  const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '')
+  const flatCss = stripComments(css)
+  const hostRule = flatCss.match(/\.editor-gutter-host\s*\{[^}]*\}/)?.[0] ?? ''
+  const gutterRule = flatCss.match(/\.editor-gutter\s*\{[^}]*\}/)?.[0] ?? ''
+  assert.ok(hostRule, '裁剪与底色要单独放在 .editor-gutter-host 上')
+  assert.ok(/overflow:\s*hidden/.test(hostRule), '裁剪要落在不动的外壳层')
+  assert.ok(/transform/.test(gutterRule), '平移的必须是内层 .editor-gutter')
+  assert.ok(!/overflow|contain:/.test(gutterRule), '内层不能再裁剪，否则滚出第一屏就没有行号')
+  // 外壳是靠左的一整列，不是「整行右边留白」——否则底色与分隔线会横穿编辑区。
+  assert.ok(/inset:\s*0\s+auto\s+0\s+0/.test(hostRule), '行号栏要钉在左侧')
+  assert.ok(!/width:\s*auto/.test(hostRule) || /width:\s*3\.25rem/.test(hostRule), '列宽要显式给出')
+  assert.ok(/width:\s*3\.25rem/.test(hostRule), '列宽要与 textarea 的让位量配对')
+  assert.ok(css.includes('dark .editor-gutter-host'), '深色下的底色与分隔线也归外壳层')
+  assert.ok(
+    /className="editor-gutter-host"[\s\S]{0,120}ref={gutterRef} className="editor-gutter"/.test(editorSrc),
+    'JSX 必须是「外壳包着平移层」的两层结构',
+  )
+  // 折叠宽度变了（开关行号 / 换字体）时镜像层必须作废重测，否则编号按旧折行排。
+  assert.ok(/const invalidateLineMetrics = useCallback/.test(editorSrc), '要有统一的测量作废入口')
+  assert.ok(
+    /mirrorBuiltTextRef\.current = null[\s\S]{0,160}cachedMapperRef\.current = null/.test(editorSrc),
+    '作废要同时清掉镜像层与滚动映射缓存',
+  )
+  assert.ok(
+    /useEffect\(\(\) => \{\s*invalidateLineMetrics\(\)[\s\S]{0,320}lineNumbers\],\)\.\[/.test(editorSrc) ||
+      /, lineNumbers\)\]/.test(editorSrc) ||
+      /\}, \[invalidateLineMetrics, lineNumbers\]\)/.test(editorSrc),
+    '行号开关切换时要作废测量（它改了 textarea 的左内边距，折行宽度跟着变）',
+  )
   const settingsSrc = readFileSync(join(root, 'src/pages/SettingsPage.tsx'), 'utf8')
   for (const label of ['编辑区显示行号', '编辑区末尾留白', '双栏自动同步滚动']) {
     assert.ok(settingsSrc.includes(label), `设置页里应有「${label}」相关开关文案`)

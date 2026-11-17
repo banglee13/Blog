@@ -1036,6 +1036,20 @@ export default function Editor() {
     return mirror
   }, [])
 
+  /**
+   * 让镜像层与滚动映射的缓存作废。
+   *
+   * 折行结果取决于「文本 + 宽度 + 左内边距 + 字体」，而 `ensureMirror` 只能察觉前两项：
+   * 打开行号会把 textarea 的 `padding-left` 从 1.25rem 推到 3.5rem（可用宽度少 36px），
+   * 设置里换字体 / 云端字体加载完成则改行高与字宽。这些时刻不重测，编号就会按旧的折行
+   * 位置排，越往下越歪 —— 所以凡是动了这几项的地方都要显式叫它作废。
+   */
+  const invalidateLineMetrics = useCallback(() => {
+    mirrorBuiltTextRef.current = null
+    cachedMapperRef.current = null
+    anchorsDirtyRef.current = true
+  }, [])
+
   const ensureScrollMapper = useCallback((): BidirectionalScrollMapper | null => {
     const ta = textareaRef.current
     const pv = previewRef.current
@@ -1251,15 +1265,25 @@ export default function Editor() {
   useEffect(() => {
     let active = true
     document.fonts?.ready.then(() => {
-      if (active) {
-        mirrorBuiltTextRef.current = null
-        anchorsDirtyRef.current = true
-      }
+      if (active) invalidateLineMetrics()
     })
     return () => {
       active = false
     }
-  }, [])
+  }, [invalidateLineMetrics])
+
+  /*
+   * 测量缓存的两个失效时机：
+   *   · 行号开关本身（textarea 的左内边距变了，可用宽度就变了）；
+   *   · 任何偏好变化（`starlog:settings-changed`：字体、字号都会改行高与折行）。
+   * 重建由「行号栏」那个 effect 负责（它依赖 lineNumbers / deferredContent，会立刻 measure 一次），
+   * 这里只负责让缓存失效，不在这里做布局测量。
+   */
+  useEffect(() => {
+    invalidateLineMetrics()
+    window.addEventListener('starlog:settings-changed', invalidateLineMetrics)
+    return () => window.removeEventListener('starlog:settings-changed', invalidateLineMetrics)
+  }, [invalidateLineMetrics, lineNumbers])
 
   // 全屏时按 Esc 退出（输入法组合键中的 Esc 用于取消候选，不退出全屏；
   // 符号选择框或其它对话框开着时 Esc 只关闭当前弹层，不连带退出全屏）。
@@ -1702,18 +1726,24 @@ export default function Editor() {
           >
             {view !== 'preview' && (
               <div className="relative min-h-0 overflow-hidden">
-                {/* 行号栏（issue #127）：数字位置来自镜像层的真实行高测量，跟随编辑区滚动 */}
+                {/*
+                  行号栏（issue #127）：数字位置来自镜像层的真实行高测量。
+                  外壳负责裁剪与底色，内层用 transform 跟随编辑区滚动 —— 两层必须分开，
+                  否则裁剪框会跟着平移，第二屏之后的编号就再也看不到了。
+                */}
                 {lineNumbers && (
-                  <div ref={gutterRef} className="editor-gutter" aria-hidden="true">
-                    {lineMetrics.map((metric) => (
-                      <span
-                        key={metric.line}
-                        className="editor-gutter-line"
-                        style={{ top: metric.top, height: metric.height || undefined }}
-                      >
-                        {metric.line}
-                      </span>
-                    ))}
+                  <div className="editor-gutter-host" aria-hidden="true">
+                    <div ref={gutterRef} className="editor-gutter">
+                      {lineMetrics.map((metric) => (
+                        <span
+                          key={metric.line}
+                          className="editor-gutter-line"
+                          style={{ top: metric.top, height: metric.height || undefined }}
+                        >
+                          {metric.line}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
                 <textarea

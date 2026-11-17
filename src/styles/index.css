@@ -859,11 +859,18 @@ details[open] .callout-chevron {
   padding-left: 3.5rem;
 }
 
-.editor-gutter {
+/*
+  外壳层：负责裁剪、底色与分隔线，它自己不滚动。
+  顶到底都占满 —— 编辑区可见区域有多高，这一栏就有多高，超出部分由这一层裁掉。
+*/
+.editor-gutter-host {
   position: absolute;
-  /* 顶到底都占满：编辑区可见区域有多高，这一栏就有多高，超出部分裁掉 */
-  inset: 0 3.25rem 0 0;
+  /* 靠左的一整列，不是「整行右边留 3.25rem」：写成 inset: 0 3.25rem 0 0 会让底色与
+     分隔线横穿整个编辑区，数字还会跑到最右边。 */
+  inset: 0 auto 0 0;
+  width: 3.25rem;
   overflow: hidden;
+  contain: layout paint;
   pointer-events: none;
   user-select: none;
   /* 字号与行高必须和 .editor-textarea 一致（14px / 1.75），数字才会正好落在每一行的第一行上 */
@@ -874,10 +881,22 @@ details[open] .callout-chevron {
   color: rgba(133, 145, 171, 0.9);
   background: linear-gradient(to right, transparent, rgba(236, 238, 242, 0.72));
   border-right: 1px solid rgba(213, 217, 226, 0.7);
-  contain: layout paint;
 }
 
-.dark .editor-gutter {
+/*
+  数字层：随 textarea.scrollTop 平移的那一层，坐标是整篇文档的空间。
+  它自己**绝对不能**再带 overflow / contain: paint —— 裁剪框会跟着 transform 一起被搬走，
+  超出「一屏」的编号会被永久裁掉，于是滚到第二屏之后整栏行号直接消失（第一版就栽在这儿）。
+*/
+.editor-gutter {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  will-change: transform;
+}
+
+.dark .editor-gutter-host {
   color: rgba(102, 115, 145, 0.95);
   background: linear-gradient(to right, transparent, rgb(255 255 255 / 0.035));
   border-right-color: rgb(255 255 255 / 0.08);

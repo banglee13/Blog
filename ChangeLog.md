@@ -213,6 +213,25 @@
   行数口径（CRLF / 行尾换行）、留白算术的四个边界（行高未知时不加留白）；并静态断言编辑器接了 DOM、
   样式表有对应类、设置页三个开关的文案存在、开关只写本机不直连接口。
 
+### 追加：行号栏整栏消失 + 位置跑偏（同日反馈，上一节的设计有两处错）
+
+- **裁剪写错了层**：`.editor-gutter` 同时带 `overflow: hidden` / `contain: layout paint` 和
+  `transform: translateY(-scrollTop)`。裁剪框是在元素自己的坐标系里算的，会跟着 transform 一起搬走 ——
+  于是只有文档开头「一屏高」以内的编号落在裁剪框里能画出来，其余全被裁掉；滚过第一屏之后行号整栏消失。
+  现在拆成两层：`.editor-gutter-host`（不动，负责裁剪、底色、分隔线、字号与配色）包着 `.editor-gutter`
+  （只负责 `transform` 平移，绝不裁剪）。上面那句「`.editor-gutter` 用 `contain: layout paint`」以本节为准。
+- **几何写反了**：外壳原本写成 `inset: 0 3.25rem 0 0`（整行、右边留 3.25rem），而不是 `inset: 0 auto 0 0`
+  + `width: 3.25rem`（靠左的一列）。后果是那条渐变底色与 `border-right` 横穿整个编辑区，
+  右对齐的编号也跑到最右边去了。现在列宽显式为 3.25rem，与正文让位的 3.5rem 配对（留 0.25rem 呼吸位）。
+- **测量缓存少一个失效时机**：`ensureMirror` 只按「文本 + `clientWidth`」判断镜像层是否过期，
+  而开关行号改的是 `padding-left`（1.25rem → 3.5rem，可用宽度少 36px），`clientWidth` 不变 → 镜像不重建，
+  编号按旧的折行结果排，越往下越歪；换字体 / 云端字体到位同理。新增统一的 `invalidateLineMetrics()`
+  （清镜像层标记 + 滚动映射缓存 + `anchorsDirty`），在 `lineNumbers` 变化与 `starlog:settings-changed`
+  时调用，`document.fonts.ready` 也改走它。
+- 测试：#127 用例现在从样式表里把两条规则解析出来做结构断言（先剥掉注释，免得注释里的「反例」被当成断言目标）：
+  裁剪必须在 host 上、内层必须有 `transform` 且不得出现 `overflow` / `contain:`、host 必须是靠左定宽列，
+  再加 JSX 的「外壳包平移层」结构与 `invalidateLineMetrics` 的两处接线。
+
 
 ## 2026-11-17 · 页面跳转不再左右抖动，首屏少下一大块代码（#128）
 
