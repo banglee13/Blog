@@ -8,6 +8,7 @@ const Archive = lazy(() => import('./pages/Archive'))
 const TagsPage = lazy(() => import('./pages/TagsPage'))
 const Toolbox = lazy(() => import('./pages/Toolbox'))
 const EchoCave = lazy(() => import('./pages/EchoCave'))
+const LanEdit = lazy(() => import('./pages/LanEdit'))
 const GenshinData = lazy(() => import('./pages/GenshinData'))
 const About = lazy(() => import('./pages/About'))
 const Login = lazy(() => import('./pages/Login'))
@@ -36,6 +37,8 @@ export default function App() {
           <Route path="tags/:tag" element={<TagsPage />} />
           <Route path="toolbox" element={<Toolbox />} />
           <Route path="toolbox/echo" element={<EchoCave />} />
+          {/* 局域网协作（issue #112）：中心是用户自己跑的进程，只在离线版入口里出现 */}
+          <Route path="toolbox/lan" element={<LanEdit />} />
           <Route path="toolbox/genshin" element={<GenshinData />} />
           <Route path="toolbox/genshin/:kind/:id" element={<GenshinData />} />
           <Route path="about" element={<About />} />

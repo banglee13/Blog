@@ -40,13 +40,18 @@ import { Archive,
 import { Markdown } from '../components/Markdown'
 import { LatexPicker } from '../components/LatexPicker'
 import { setEditorFullscreenActive } from '../components/Layout'
+import { lockPageScroll } from '../lib/scrollLock'
 import { PasswordPrompt } from '../components/PasswordPrompt'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
 import { requestHeaderYieldRefresh } from '../lib/headerYield'
 import {
   type BidirectionalScrollMapper,
+  type TextLineMetric,
+  collectLineMetrics,
   collectScrollSyncAnchors,
+  computeScrollPastEndPadding,
+  countTextLines,
   createBidirectionalScrollMapper,
   rebuildTextareaLineMirror,
 } from '../lib/scrollSync'
@@ -85,7 +90,7 @@ import { focusWithoutScroll, restoreCaret } from '../lib/caret'
 import { latexSymbolInsert, type LatexSymbol } from '../lib/latexSymbols'
 import { handleEditorKey, insertBlock, toggleLinePrefix, toggleWrap } from '../lib/editor'
 import type { EditAction } from '../lib/editor'
-import { useEditorScrollSync } from '../lib/editorSettings'
+import { useEditorLineNumbers, useEditorScrollPastEnd, useEditorScrollSync } from '../lib/editorSettings'
 import { useRepoTarget } from '../lib/useRepoTarget'
 import type { Post } from '../lib/types'
 
@@ -204,6 +209,9 @@ export default function Editor() {
   const [metaOpen, setMetaOpen] = useState(!existing)
   const [fullscreen, setFullscreen] = useState(false)
   const [scrollSync] = useEditorScrollSync()
+  // issue #127：编辑区行号栏，以及「可以一直下滑到最后一行停在编辑区最上方」的末尾留白
+  const [lineNumbers] = useEditorLineNumbers()
+  const [scrollPastEnd] = useEditorScrollPastEnd()
   const [dirty, setDirty] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(existing?.savedAt ?? null)
   const [publishing, setPublishing] = useState(false)
@@ -239,6 +247,16 @@ export default function Editor() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const gutterRef = useRef<HTMLDivElement>(null)
+  /**
+   * 末尾留白高度（px）。滚动映射要把它从「文档总高」里扣掉（它不是内容），
+   * 所以同时存一份 ref：让 ensureScrollMapper 读到最新值而不必把它放进依赖数组。
+   */
+  const tailPadRef = useRef(0)
+  const [tailPad, setTailPad] = useState(0)
+  const [lineMetrics, setLineMetrics] = useState<TextLineMetric[]>([{ line: 1, top: 0, height: 0 }])
+  /** 镜像层是否为当前某个功能所需（双栏同步滚动 or 行号栏）。 */
+  const needsMirror = (view === 'split' && scrollSync) || lineNumbers
 
   const tags = useMemo(
     () =>
@@ -260,6 +278,7 @@ export default function Editor() {
   }, [content])
   const deferredContent = useDeferredValue(debouncedContent)
   const words = useMemo(() => countWords(deferredContent), [deferredContent])
+  const lineCount = useMemo(() => countTextLines(content), [content])
   const readingMinutes = useMemo(() => Math.max(1, Math.round(words / 400)), [words])
 
   // 文首排版指令（issue #59）在编辑器里同样实时生效，做到所见即所得：
@@ -1001,23 +1020,40 @@ export default function Editor() {
     [],
   )
 
-  const ensureScrollMapper = useCallback((): BidirectionalScrollMapper | null => {
+  /**
+   * 保证隐藏镜像层与「当前文本 + 当前宽度」一致，并返回它。
+   *
+   * 行号栏与双栏滚动同步共用同一份测量：谁先需要谁付重建的代价，另一处直接捡现成的。
+   */
+  const ensureMirror = useCallback((): HTMLDivElement | null => {
     const ta = textareaRef.current
     const mirror = mirrorRef.current
+    if (!ta || !mirror) return null
+    if (mirrorBuiltTextRef.current !== ta.value || mirrorBuiltWidthRef.current !== ta.clientWidth) {
+      mirrorBuiltWidthRef.current = rebuildTextareaLineMirror(ta, mirror)
+      mirrorBuiltTextRef.current = ta.value
+    }
+    return mirror
+  }, [])
+
+  const ensureScrollMapper = useCallback((): BidirectionalScrollMapper | null => {
+    const ta = textareaRef.current
     const pv = previewRef.current
-    if (!ta || !mirror || !pv || pv.clientHeight === 0 || ta.clientHeight === 0) {
+    if (!ta || !pv || pv.clientHeight === 0 || ta.clientHeight === 0) {
       return null
     }
+    const mirror = ensureMirror()
+    if (!mirror) return null
 
     const cached = cachedMapperRef.current
-    const needMirrorRebuild =
-      mirrorBuiltTextRef.current !== ta.value || mirrorBuiltWidthRef.current !== ta.clientWidth
+    // 末尾留白（issue #127）只是 textarea 的下内边距，不是文档内容：
+    // 算映射时扣掉它，否则滚进留白区会把预览区一起顶到底部。
+    const taContentHeight = Math.max(ta.scrollHeight, mirror.scrollHeight) - tailPadRef.current
     const needAnchorRebuild =
       anchorsDirtyRef.current ||
-      needMirrorRebuild ||
       !cached ||
       cached.taClientWidth !== ta.clientWidth ||
-      cached.taScrollHeight !== ta.scrollHeight ||
+      cached.taScrollHeight !== taContentHeight ||
       cached.taClientHeight !== ta.clientHeight ||
       cached.pvScrollHeight !== pv.scrollHeight ||
       cached.pvClientHeight !== pv.clientHeight
@@ -1026,14 +1062,9 @@ export default function Editor() {
       return cached.mapper
     }
 
-    if (needMirrorRebuild) {
-      mirrorBuiltWidthRef.current = rebuildTextareaLineMirror(ta, mirror)
-      mirrorBuiltTextRef.current = ta.value
-    }
-
     const anchors = collectScrollSyncAnchors(ta, mirror, pv)
     const mapper = createBidirectionalScrollMapper(anchors, {
-      taScrollHeight: Math.max(ta.scrollHeight, mirror.scrollHeight),
+      taScrollHeight: taContentHeight,
       taClientHeight: ta.clientHeight,
       pvScrollHeight: pv.scrollHeight,
       pvClientHeight: pv.clientHeight,
@@ -1042,14 +1073,14 @@ export default function Editor() {
     cachedMapperRef.current = {
       mapper,
       taClientWidth: ta.clientWidth,
-      taScrollHeight: ta.scrollHeight,
+      taScrollHeight: taContentHeight,
       taClientHeight: ta.clientHeight,
       pvScrollHeight: pv.scrollHeight,
       pvClientHeight: pv.clientHeight,
     }
     anchorsDirtyRef.current = false
     return mapper
-  }, [])
+  }, [ensureMirror])
 
   const syncFromDriver = useCallback(
     (driver: 'editor' | 'preview') => {
@@ -1098,7 +1129,75 @@ export default function Editor() {
   /** 内容、延迟渲染正文、视图或尺寸变化后，标记锚点需重算。 */
   useEffect(() => {
     anchorsDirtyRef.current = true
-  }, [content, deferredContent, view, scrollSync, fullscreen])
+  }, [content, deferredContent, view, scrollSync, fullscreen, lineNumbers, tailPad])
+
+  /* ---------------------- 行号栏与末尾留白（issue #127） ----------------------
+   * 两者都依赖镜像层的真实行高：行号要按折行后的视觉高度定位，末尾留白要按视口高度
+   * 与一行的高度算差值。测量都走 ensureMirror 的同一份结果，输入过程中也只重建一次。
+   * -------------------------------------------------------------------------- */
+  useEffect(() => {
+    if (!lineNumbers) {
+      setLineMetrics([{ line: 1, top: 0, height: 0 }])
+      return
+    }
+    const ta = textareaRef.current
+    if (!ta) return
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      const mirror = ensureMirror()
+      if (!mirror) return
+      setLineMetrics(collectLineMetrics(mirror))
+      if (gutterRef.current) gutterRef.current.style.transform = `translateY(${-ta.scrollTop}px)`
+    }
+    const schedule = () => {
+      if (frame) cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(measure)
+    }
+    measure()
+    const observer =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(schedule) : null
+    observer?.observe(ta)
+    const onScroll = () => {
+      if (gutterRef.current) gutterRef.current.style.transform = `translateY(${-ta.scrollTop}px)`
+    }
+    ta.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', schedule)
+    return () => {
+      if (frame) cancelAnimationFrame(frame)
+      observer?.disconnect()
+      ta.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', schedule)
+    }
+  }, [lineNumbers, ensureMirror, deferredContent, view, fullscreen])
+
+  /** 末尾留白：让最后一行能滚到编辑区顶部；关闭时留白为 0，行为与原来一致。 */
+  useEffect(() => {
+    const ta = textareaRef.current
+    const enabled = scrollPastEnd && view !== 'preview'
+    const apply = () => {
+      if (!ta || !enabled) {
+        tailPadRef.current = 0
+        setTailPad(0)
+        return
+      }
+      const style = window.getComputedStyle(ta)
+      const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.6 || 20
+      const pad = Number.parseFloat(style.paddingTop) || 0
+      // 底部保留与顶部对称的一个行高，其余空间用来垫出「可继续下滑」的行程
+      const next = computeScrollPastEndPadding(ta.clientHeight, lineHeight, pad)
+      tailPadRef.current = next
+      setTailPad(next)
+    }
+    apply()
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(apply) : null
+    if (ta) observer?.observe(ta)
+    window.addEventListener('resize', apply)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', apply)
+    }
+  }, [scrollPastEnd, view, fullscreen])
 
   // 空闲时（停止输入约 160ms）提前预热镜像层与锚点样条，使首次滚动零卡顿。
   useEffect(() => {
@@ -1176,17 +1275,14 @@ export default function Editor() {
   }, [fullscreen, latexPickerOpen])
 
   // 同步全屏状态给外层 Layout（隐藏吸顶页头/页脚/全站搜索热键）并锁定底层页面滚动，避免冲突。
+  // issue #128：锁滚动改用 lib/scrollLock 的引用计数——全屏编辑器里再开 LaTeX 面板时，
+  // 关掉面板不该把整页滚动一起解锁；解锁时也不会因为滚动条回来而让页面左右跳一下。
   useEffect(() => {
     setEditorFullscreenActive(fullscreen)
-    const prevOverflow = typeof document !== 'undefined' ? document.documentElement.style.overflow : ''
-    if (fullscreen && typeof document !== 'undefined') {
-      document.documentElement.style.overflow = 'hidden'
-    }
+    const unlock = fullscreen ? lockPageScroll() : null
     requestHeaderYieldRefresh()
     return () => {
-      if (typeof document !== 'undefined') {
-        document.documentElement.style.overflow = prevOverflow
-      }
+      unlock?.()
       if (fullscreen) {
         setEditorFullscreenActive(false)
       }
@@ -1577,6 +1673,10 @@ export default function Editor() {
               <span className="hidden sm:inline">
                 {words} 字 · 约 {readingMinutes} 分钟
               </span>
+              {/* issue #127：行号栏开着时行号写在这一栏里；关闭时这里也给出总行数 */}
+              <span className="hidden font-mono sm:inline" title="编辑区当前行数">
+                {lineCount} 行
+              </span>
               <span className="flex items-center gap-1">
                 {dirty ? (
                   <>
@@ -1602,6 +1702,20 @@ export default function Editor() {
           >
             {view !== 'preview' && (
               <div className="relative min-h-0 overflow-hidden">
+                {/* 行号栏（issue #127）：数字位置来自镜像层的真实行高测量，跟随编辑区滚动 */}
+                {lineNumbers && (
+                  <div ref={gutterRef} className="editor-gutter" aria-hidden="true">
+                    {lineMetrics.map((metric) => (
+                      <span
+                        key={metric.line}
+                        className="editor-gutter-line"
+                        style={{ top: metric.top, height: metric.height || undefined }}
+                      >
+                        {metric.line}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   ref={textareaRef}
                   value={content}
@@ -1619,10 +1733,16 @@ export default function Editor() {
                   onScroll={handleEditorScroll}
                   spellCheck={false}
                   placeholder="在这里用 Markdown 写作…"
-                  className="editor-textarea h-full w-full resize-none bg-transparent p-5 font-mono text-[14px] text-ink-800 outline-none placeholder:text-ink-400 dark:text-ink-100"
+                  style={tailPad ? { paddingBottom: `${tailPad + 20}px` } : undefined}
+                  className={`editor-textarea h-full w-full resize-none bg-transparent p-5 font-mono text-[14px] text-ink-800 outline-none placeholder:text-ink-400 dark:text-ink-100 ${
+                    lineNumbers ? 'editor-textarea-with-gutter' : ''
+                  }`}
                 />
-                {/* 滚动同步用的隐藏镜像层：与 textarea 同字体同宽度，用于测量每行的像素位置。 */}
-                {view === 'split' && scrollSync && (
+                {/*
+                  隐藏镜像层：与 textarea 同字体同宽度，用来测量每一行的像素位置。
+                  双栏滚动同步（issue #101）与行号栏（issue #127）共用这一层，任一需要就得渲染。
+                */}
+                {needsMirror && (
                   <div
                     ref={mirrorRef}
                     aria-hidden="true"

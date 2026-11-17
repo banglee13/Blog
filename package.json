@@ -14,6 +14,7 @@
     "build:offline": "vite build --config vite.offline.config.ts && node scripts/verify-offline.mjs",
     "preview:offline": "vite preview --config vite.offline.config.ts --port 5180",
     "verify:offline": "node scripts/verify-offline.mjs",
+    "hub": "node scripts/offline-hub.mjs",
     "genshin:sync": "node scripts/sync-genshin.mjs",
     "genshin:verify": "node scripts/verify-genshin.mjs"
   },

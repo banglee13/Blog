@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Github,
@@ -21,13 +21,21 @@ import { installHeaderYield, requestHeaderYieldRefresh } from '../lib/headerYiel
 import { useTheme } from '../lib/theme'
 import { DEFAULT_COLOR_THEME } from '../lib/themes'
 import { useAuth } from '../lib/auth'
-import { AnimatedBackdrop } from './AnimatedBackdrop'
+/**
+ * 动态背景（canvas 渲染器）按需要再加载（issue #128：首屏提速）。
+ *
+ * 它只是一层装饰，不参与内容排版与交互：把它从入口 chunk 里拆出去后，首屏脚本要下载
+ * 与解析的代码少了一大截，慢网下正文能提前出现；背景层自己加载完再淡入（fallback 用 null，
+ * 不做占位，避免出现一个空框）。离线单文件版用 inlineDynamicImports 打成一个文件，不受影响。
+ */
+const AnimatedBackdrop = lazy(() => import('./AnimatedBackdrop').then((mod) => ({ default: mod.AnimatedBackdrop })))
 import { useAnimatedBackground, useAnimatedSceneOverride, getSceneValues } from '../lib/animatedBackground'
 import { SearchDialog } from './SearchDialog'
 import { OFFLINE } from '../lib/runtime'
 import { countLocalContent } from '../lib/offlineBundle'
 import { ThemePicker } from './ThemePicker'
 import logoVenti from '../assets/logo-venti.jpg'
+import { BackgroundImageLayer } from './BackgroundImageLayer'
 
 const NAV = [
   { to: '/', label: '首页', end: true },
@@ -351,7 +359,11 @@ function AnimatedBackdropLayer({ ignoreOverride = false }: { ignoreOverride?: bo
   const override = useAnimatedSceneOverride()
   const scene = ignoreOverride ? pref.scene : (override ?? pref.scene)
   if (scene === 'none') return null
-  return <AnimatedBackdrop scene={scene} values={getSceneValues(pref, scene)} />
+  return (
+    <Suspense fallback={null}>
+      <AnimatedBackdrop scene={scene} values={getSceneValues(pref, scene)} />
+    </Suspense>
+  )
 }
 
 /**
@@ -460,6 +472,8 @@ export function Layout() {
     <div className="relative flex min-h-screen flex-col">
       {/* 背景装饰：正序 z-0 图层确保任何 stacking context 下都不会被 body 底色遮挡 */}
       <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+        {/* 固定背景图（issue #126）：在氛围光之下、在所有内容之下 */}
+        <BackgroundImageLayer />
         <div className="site-background-glow-primary absolute -left-40 -top-40 h-[32rem] w-[32rem] animate-float rounded-full blur-[110px]" />
         <div
           className="site-background-glow-secondary absolute -right-32 top-40 h-[26rem] w-[26rem] animate-float rounded-full blur-[110px]"

@@ -42,6 +42,11 @@ export const githubConfig = {
   branch: 'main',
   /** 文章目录（相对仓库根目录） */
   postsDir: 'content/posts',
+  /**
+   * 给所有访客铺一张默认背景图（issue #126）：填 `user_upload/background_image/` 下的文件名即可，
+   * 留空表示不干预。读者在「设置 → 背景」里选了自己的背景时，以读者的选择为准。
+   */
+  defaultBackgroundImage: '',
 }
 
 /**
@@ -73,6 +78,22 @@ export const commentsConfig = {
   category: 'General',
   /** 每篇文章对应讨论标题的前缀。 */
   titlePrefix: '[文章评论]',
+}
+
+/**
+ * 账号设置同步（issue #129 / #130）。
+ *
+ * 每个 GitHub 账号一条 Discussion，正文里放 JSON 快照：设置跟着账号走，
+ * 但**不写进仓库**（不再有 `.starlog/settings/<类型>/<login>.json` 这类提交）。
+ */
+export const settingsSyncConfig = {
+  /**
+   * 优先使用的 Discussions 分类名；仓库里没有这个分类时自动退回评论所用的分类，
+   * 这样未做任何配置的站长也能立刻用上设置同步（不必先去建分类）。
+   */
+  category: 'Settings',
+  /** 自动保存的去抖间隔：停手这么久之后才发一次请求，避免每敲一下滑块就写一次讨论。 */
+  debounceMs: 4000,
 }
 
 export const echoCaveConfig = {
@@ -119,6 +140,8 @@ export const STORAGE_KEYS = {
   font: 'starlog:font',
   fontAccounts: 'starlog:font-accounts',
   background: 'starlog:background',
+  /** 固定背景图（issue #126）：仓库图片或本机图片的 data URI */
+  backgroundImage: 'starlog:background-image',
   backgroundAccounts: 'starlog:background-accounts',
   /** 集中保存个人偏好，使用 localStorage + 事件更新。 */
   personalSettings: 'starlog:personal-settings',
@@ -130,6 +153,10 @@ export const STORAGE_KEYS = {
   drafts: 'starlog:drafts',
   /** 离线版：被删除的内置文章 slug 列表（删除只在本机生效，故记录墓碑） */
   offlineHidden: 'starlog:offline-hidden',
+  /** 账号设置同步的本机状态：自动保存开关、最后同步时间、各偏好的改动时间 */
+  settingsSync: 'starlog:settings-sync',
+  /** 账号设置所在的 Discussions 编号缓存（避免每次自动保存都要翻讨论列表） */
+  settingsDiscussion: 'starlog:settings-discussion',
   /** 离线版：每篇文章的本机历史版本快照 */
   offlineVersions: 'starlog:offline-versions',
 } as const

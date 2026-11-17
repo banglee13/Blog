@@ -1,5 +1,234 @@
 # 更新日志 · ChangeLog
 
+## 2026-11-17 · 设置不再写进仓库：改成自动同步到账号的 GitHub Discussion（#129 / #130）
+
+| 模型信息 | |
+| --- | --- |
+| 模型名称 | Arena.ai Agent Mode（平台多模型动态调度，包括但不限于 Claude、ChatGPT、Gemini、Grok、Qwen、Kimi 等） |
+| 模型版本号 | 未公开（由 Arena.ai 平台调度，不提供具体底层模型版本） |
+| 知识库截止时间 | 未公开（依所调度的底层模型而定，平台未公开统一口径） |
+
+### 背景
+
+- #129 要求「所有设置（含颜色、字号）都自动保存到对应的 GitHub 账号」；#130 进一步要求
+  「所有用户的个人设置**不要保存到仓库**，改用 GitHub Discussions 保存」，并注明「如果有更好的方式也可以」。
+- 旧实现两条都不满足：每个分区一个「保存到 GitHub 账号」按钮，走**待更新队列 + 仓库文件**
+  （`.starlog/settings/font-preferences/<login>.json`、`.starlog/settings/background-preferences/<login>.json`），
+  改一次字号就多一个 commit、多一次 Pages 重建，而且必须手动点按钮。
+
+### 新增
+
+- `src/lib/settingsSnapshot.ts`（纯函数层）：`SYNCED_SETTINGS` 白名单（`font`、`background`、`backgroundImage`、
+  `colorTheme`、`themeMode`、`animatedBackground`、`editorScrollSync`、`editorLineNumbers`、`editorScrollPastEnd`、`repository`），
+  每项带 `valid()` 校验；Discussion 正文 = 定位标记 + 说明 + JSON 代码块；单值超过 8000 字符直接**跳过并说明原因**
+  （截断 JSON 会连累整份快照）；`mergeRemoteSettings()` 按**每一项**的最后修改时间决定「用远端 / 保留本机」。
+- `src/lib/settingsSync.tsx`：`SettingsSyncProvider`。监听 `starlog:settings-changed`，停止操作 4 秒后自动上行；
+  FNV 指纹去重（多标签页不会互相顶）；登录后自动恢复；把旧版写在仓库里的偏好文件读出来迁移到 Discussion。
+- `src/components/SettingsSyncCard.tsx`：全站唯一的同步入口（状态行、立即保存、从账号重新载入、查看设置讨论、
+  自动保存开关、会同步哪些项、被跳过项的原因、`清理仓库中的旧文件`）。
+- 仓库侧只多了四个函数（`src/lib/github.ts`）：按标记查找讨论、按缓存的编号直取、创建讨论、更新讨论体；
+  讨论编号缓存在 `STORAGE_KEYS.settingsDiscussion`，命中后一条请求即可定位。
+
+### 调整
+
+- **删掉全部仓库写入路径**：`SettingsFileUpdate`、`build*PreferenceFile`、`saveGithub*Preference`、
+  `updateQueue.enqueueSettingsSync` 一并移除；`fetchGithub*Preference` 只保留读取，仅供迁移。
+  于是同步不需要仓库写入权限、不进待更新队列、不产生 commit、不触发部署。
+- `SettingsPage` 各分区里的「保存到 GitHub 账号」按钮全部撤掉，字体、背景、外观同步三处改为统一指向同步卡片；
+  字号 / 颜色 / 主题 / 编辑器开关的持久化仍然只走 `settingsStore`（一个 `writePersonalSetting` 出口），
+  云端一律由同步层负责 —— 不再在每个 Provider 里各写一份账号同步代码。
+- `src/main.tsx` 的 Provider 顺序改为 Theme → Auth → Toast → **SettingsSync** → Font → Background → StorageGuard：
+  同步层要用 toast，又必须位于 Font / Background 之下，它们才能收到恢复事件。
+- 仓库里已提交的 `.starlog/settings/font-preferences/lrbkdgw.json` 删除；README 的「账号外观同步」「字体保存到 GitHub」
+  与 FAQ 相应问答全部改写为新机制。
+
+### 修复
+
+- 旧写法在「本机比远端新」时也会整份覆盖本地设置；现在按项比较时间戳，另一台设备的旧快照不会把本机新改动冲掉。
+- 讨论正文被人为改坏 / 版本更高 / JSON 非法时，`parseSettingsDiscussionBody()` 返回 `null`，
+  按「远端还没有设置」处理，不会再恢复出半个状态。
+
+### 验证
+
+- `npx tsc --noEmit`、`npm run build`、`npm run build:offline`（含 `scripts/verify-offline.mjs` 自检）通过。
+- `scripts/test-features.mjs` 新增用例：白名单边界（凭据与本地数据不得上云、超限值进 `skipped`）、
+  渲染 / 解析成环、未知键与非法值丢弃、跨账号拒绝认领、逐条时间戳合并；并静态断言
+  仓库里不再有 `.starlog/` 目录、`github.ts` 里不再有设置写入函数、设置页不再有分散的保存按钮。
+- `npm test` 全绿（站点 18 项；扩展 77 项：73 通过、4 跳过、0 失败）。
+
+
+## 2026-11-17 · 离线版新增局域网协作编辑（#112）
+
+| 模型信息 | |
+| --- | --- |
+| 模型名称 | Arena.ai Agent Mode（平台多模型动态调度，包括但不限于 Claude、ChatGPT、Gemini、Grok、Qwen、Kimi 等） |
+| 模型版本号 | 未公开（由 Arena.ai 平台调度，不提供具体底层模型版本） |
+| 知识库截止时间 | 未公开（依所调度的底层模型而定，平台未公开统一口径） |
+
+### 背景
+
+- #112：「离线版能否让局域网内的几台设备共同编辑同一个文档」，并注明「可以仅实现在离线版中」。
+- 离线单文件版按设计**不发起任何网络请求**（`scripts/verify-offline.mjs` 会硬检查产物里的公网端点），
+  所以协作中心不能是任何公网服务，也不能要求装数据库。
+
+### 新增
+
+- `scripts/offline-hub.mjs`：**零依赖**的中心进程（只用 Node 内置模块），`node scripts/offline-hub.mjs --room 机房协作`
+  即可启动。默认监听 `0.0.0.0:8787`，只读写局域网，不向公网发出任何请求；顺手把 `offline/index.html` 作为站点
+  发给其他设备，于是那几台设备不必各自拷文件。提供 `join / ops / state / leave` 四个接口 + 一条 SSE 广播，
+  `--read-only` 可切成只转播不写入；整篇上限 4MB、单段上限 200KB，超限整批退回。
+- `src/lib/lanDoc.ts`：协作文档模型。文档切成**段落 block**（`splitParagraphs` 以一整行空白为分隔，
+  代码围栏 ``` 与 `::begin_…/::end_…` 容器内部的空行不切分）；`lcsMatches()` 求最长公共子序列拿到锚点段落，
+  `planLocalChange()` 把锚点之间的空隙成对判为「改写」，多出来的分别处理为插入 / 墓碑删除；
+  合并按 (v, ts) 后写覆盖先写（`applyRemoteOps`），`resequence()` 在 seq 挤不下时整表重排。
+- `src/lib/lanSync.ts`：会话层。停止输入 700ms 后上行差异；**自己正在敲字时收到的远端改动不立刻回写编辑区**
+  （否则光标乱跳），先记下来，等本轮输入结束再合并；差异以「上次同步的基线段落表」为参照计算，
+  因此不会把别人刚写、自己还没看到的段落误报成「被我删了」；上行前把版本号抬到中心当前值之上，避免被 LWW 挡掉。
+  断线自动重试，`normalizeHubUrl()` 只接受 http(s) 并核对主机名形状。
+- `src/pages/LanEdit.tsx` + 路由 `/toolbox/lan`：中心地址 / 房间名 / 名字三个输入框、在线成员、冲突计数提示、
+  立即上行、用当前内容初始化房间、复制 / 导出 `.md` / 存为本地草稿；卡片只出现在离线版（`OFFLINE && …`）。
+- `package.json` 增加 `npm run hub`；`.github/workflows/offline.yml` 把 `scripts/offline-hub.mjs`
+  作为 `starlog-offline-hub.mjs` 与离线 HTML 一起挂进滚动 Release。
+
+### 调整
+
+- README「离线版」章节新增「局域网协作」小节（启动方式、同步粒度、写入时机、不持久化、`file://` 下可能被浏览器
+  拒绝发请求的绕法），「支持范围」表加一行；`offline/README.md` 与 Release 说明同步补充两个文件的用法。
+
+### 验证
+
+- `scripts/test-features.mjs` 新增 #112 用例：段落切分与拼回、代码块 / 容器块内部空行不切分、改写只发一条 put、
+  删除打墓碑、旧改动不能覆盖新内容也不能复活段落、重排后严格递增、地址校验；
+  再用**真起的中心进程**跑一遍协议：SSE 首帧、两个客户端的 fan-out、陈旧写入被中心挡掉且不推进 rev、
+  删除段落不出现在快照里、`/api/health`、离线 HTML 作为站点可访问。
+- 会话层用「迷你中心」验证去抖窗口内不发包、窗口结束只发一条、输入期间不被远端顶掉、冲刷后把远端段落并回来。
+- `npm run build:offline` 通过：产物里没有任何公网端点，协作所需的地址完全由用户自己填。
+
+
+## 2026-11-17 · 背景可以换成图片：仓库目录 / 本机图片 + 固定在视口（#126）
+
+| 模型信息 | |
+| --- | --- |
+| 模型名称 | Arena.ai Agent Mode（平台多模型动态调度，包括但不限于 Claude、ChatGPT、Gemini、Grok、Qwen、Kimi 等） |
+| 模型版本号 | 未公开（由 Arena.ai 平台调度，不提供具体底层模型版本） |
+| 知识库截止时间 | 未公开（依所调度的底层模型而定，平台未公开统一口径） |
+
+### 背景
+
+- #126：「希望背景能切换成 `/user_upload/background_image` 下的任意背景，也可以选择本地图片」，标题里点名的诉求是**固定背景**。
+
+### 新增
+
+- `src/lib/backgroundImage.ts`：偏好读写与来源处理。仓库图片经 `listRepoDirectory('user_upload/background_image')`
+  列出并指向 raw 原图；本机图片先缩到最长边 1920px、按需重编码（PNG 保透明，其余按质量循环压 JPEG），
+  上限约 1.3MB 后转 data URI **只存本机**；`normalizeBackgroundImageUrl()` 只接受 `data:image/…;base64,` 与 `http(s)://`，
+  `javascript:`、`url(...)` 一律丢弃；`fileNameFromUrl()` 负责把编码过的文件名还原成可读标签。
+- `src/components/BackgroundImagePicker.tsx`：预览缩略图、仓库图片缩略图网格、选本机文件、粘贴地址、
+  铺法（`cover` / `contain`）、固定在视口或随页面滚动、压暗 0–80。
+- `src/components/BackgroundImageLayer.tsx`：真正的图层，挂在 Layout 那层 `pointer-events-none fixed inset-0 z-0`
+  装饰容器里（氛围光之下、内容之下，不接收指针事件）。「随页面滚动」用 `scrollY` 反向平移整层，
+  只在 rAF 里直接改 style，不触发 React 重渲染。
+- `githubConfig.defaultBackgroundImage`：站长把文件名写进 `src/lib/config.ts` 就能给所有访客铺一张默认背景，
+  读者一旦自己选过就以读者的为准。
+
+### 调整
+
+- `index.html` 首屏脚本按「配色主题 → 字体 → 背景图 → 背景色」的顺序恢复偏好，其中背景图先临时铺到 `body`
+  （`<style id="starlog-boot-bg">`），图层挂载后立刻撤掉，消除「纯色 → 背景图」的跳变；
+  `file://` 打开的离线文件不铺远程图（只认同目录存下的 base64），与「离线不联网」保持一致。
+- `normalizeBackgroundImage()` 把 `fixed` 的手写值（`0` / `'false'`）也认成「随页面滚动」，其余按默认固定。
+- 背景图偏好作为独立的一项 `backgroundImage` 进入设置云同步白名单；本机图片因为体积上限被跳过时，
+  同步卡片会写明原因（不会假装已同步）。
+- 仓库背景图列表与远程图片在离线版里整块隐藏（`OFFLINE` 判断），不会产生任何请求。
+
+### 验证
+
+- `scripts/test-features.mjs` 新增 #126 用例：目录名常量、URL 白名单（含注入样式与超限 data URI）、
+  目录列表过滤与排序、中文名逐段编码、`fit` / `dim` / `fixed` 归一化、默认背景回退条件。
+- `npx tsc --noEmit`、`npm run build`、`npm run build:offline` 与 `offline/index.html` 同步通过。
+
+
+## 2026-11-17 · 编辑器行号栏与「末段可滚到顶」（#127）
+
+| 模型信息 | |
+| --- | --- |
+| 模型名称 | Arena.ai Agent Mode（平台多模型动态调度，包括但不限于 Claude、ChatGPT、Gemini、Grok、Qwen、Kimi 等） |
+| 模型版本号 | 未公开（由 Arena.ai 平台调度，不提供具体底层模型版本） |
+| 知识库截止时间 | 未公开（依所调度的底层模型而定，平台未公开统一口径） |
+
+### 背景
+
+- #127：①「编辑区域应该显示行号」；②「编辑器应该能一直往下滚，直到最后一行到达编辑区顶部」。
+
+### 新增
+
+- `src/lib/scrollSync.ts` 扩展三个纯函数：`collectLineMetrics()`（从共享的行镜像层读出**每个源码行的实际 top 与高度**）、
+  `computeScrollPastEndPadding()`（`max(0, 视口高 - 行高 - 上内边距)`）、`countTextLines()`（与 textarea 的行数口径一致，
+  行尾换行算一个真实空行）。
+- `src/pages/Editor.tsx`：左侧 `.editor-gutter` 行号栏（绝对定位、`transform: translateY(-scrollTop)` 跟随滚动），
+  行尾状态栏显示当前行数；`ensureMirror()` 让行号与双栏联动共用同一份镜像层，避免两套测量互相漂移。
+- `src/lib/editorSettings.ts` 重写为通用 `useFlag({ key, fallback })`，新增两项偏好：
+  `editorLineNumbers`（默认开）、`editorScrollPastEnd`（默认开），与 `editorScrollSync` 一起出现在「设置 → 编辑器」，
+  并纳入设置云同步白名单。
+
+### 调整
+
+- 折行的长段落、`::begin_ui-ccs` 这类多行块、折叠框内的内容都只占**一个**行号，与 Markdown 源码的行号语义一致；
+  样式表里 `.editor-textarea-with-gutter` 给正文让出 3.5rem，`.editor-gutter` 用 `contain: layout paint` 限制重排范围。
+- 「末段可滚到顶」把留白写在 textarea 的 `padding-bottom` 上（另加 20px 呼吸位），
+  双栏联动的映射函数同步**减掉这段留白**，否则关掉开关后预览会被拽到错误位置。
+- 行号栏颜色写成字面 rgba 而不是 Tailwind 变量引用：本项目的色阶是 `tailwind.config.js` 里的十六进制值，
+  没有 `--ink-*` CSS 变量可用。
+
+### 验证
+
+- `scripts/test-features.mjs` 新增 #127 用例：`data-l` 为 1 基的镜像度量、脏 `data-l` 整条跳过、
+  行数口径（CRLF / 行尾换行）、留白算术的四个边界（行高未知时不加留白）；并静态断言编辑器接了 DOM、
+  样式表有对应类、设置页三个开关的文案存在、开关只写本机不直连接口。
+
+
+## 2026-11-17 · 页面跳转不再左右抖动，首屏少下一大块代码（#128）
+
+| 模型信息 | |
+| --- | --- |
+| 模型名称 | Arena.ai Agent Mode（平台多模型动态调度，包括但不限于 Claude、ChatGPT、Gemini、Grok、Qwen、Kimi 等） |
+| 模型版本号 | 未公开（由 Arena.ai 平台调度，不提供具体底层模型版本） |
+| 知识库截止时间 | 未公开（依所调度的底层模型而定，平台未公开统一口径） |
+
+### 背景
+
+- #128：①在【标签】/【百宝箱】与其他页面之间跳转时整页会左右移动；②提高页面加载速度。
+- 抖动的根因是滚动条：有滚动条的页面切到没有滚动条的页面时内容区突然变宽；叠加各弹层自己写
+  `document.body.style.overflow = 'hidden'`，解锁的一瞬间再跳一次。
+
+### 新增
+
+- `src/lib/scrollLock.ts`：引用计数的页面滚动锁。同时上锁不互相顶掉，最后一个解锁者把 html / body
+  的 `overflow` 还原成脚本接管**之前**的值（不是写死 `auto`）；`isPageScrollLocked()` 供测试与调试。
+  `SearchDialog`、`LatexPicker` 与编辑器全屏三处改用它。
+
+### 调整
+
+- `src/styles/index.css` 给 `html` **与** `body` 同时声明 `scrollbar-gutter: stable`：槽位常驻，切页不再左右跳；
+  没有用 `overflow-y: scroll` 硬占位（那样锁滚动时会留一条空白槽），也不再用 `padding-right` 补偿。
+- 动态背景 `AnimatedBackdrop` 改为 `lazy()` + `Suspense fallback={null}`，从入口 chunk 拆出去（独立 43.96 kB / gzip 16.57 kB），
+  背景层加载完再淡入。
+- `src/lib/posts.ts`：仓库文章解析加缓存 `repoPostsCache`（缓存键：离线版取本机隐藏 slug 列表，线上版构建期内联、恒为空串）、
+  公开 / 全部列表聚合加 `aggregateCache`（键含草稿指纹），`getRepoPostBySlug()` 改走 Map 索引。
+  以前每次调用都重跑整站 frontmatter 解析与字数统计——切一页、开一次搜索框都要重来。
+- 排查结论（未采纳的候选）：sourcemap 里 `react-router/dist/development/*` 占 375 kB 看着像引入了开发版构建，
+  实测产物中 `ServerRouter`、`createCookieSessionStorage`、`invariant` 等符号数量为 0 —— 那只是 sourcemap 的
+  `sourcesContent` 记了原始文件，树摇已经把服务器 / RSC 分支删干净，加 `resolve.conditions` 不会省一个字节。
+
+### 验证
+
+- 切页抖动：`scripts/test-features.mjs` 新增用例断言 `html` / `body` 两条规则都在、没有 `overflow-y: scroll`，
+  三处弹层 / 全屏都走 `lockPageScroll` 且不再直接改 body 的 overflow；JSDOM 里实测引用计数（两层锁、解一层仍锁、
+  解两层恢复原值、反复锁解不泄漏）。
+- 加载速度：`npx vite build` 后 index chunk 530.92 kB / gzip 205.89 kB，Markdown 895.21 kB / gzip 275.82 kB 仍在按需路由里，
+  背景层拆出 43.96 kB；`src/main.tsx` 的 Provider 顺序与文章缓存都有断言兜住。
+
+
 ## 2026-11-16 · 百宝箱新增原神 7.2 正式服角色与武器资料
 
 | 模型信息 | |

@@ -301,10 +301,24 @@
     -webkit-tap-highlight-color: transparent;
     /* 字号偏好在根节点统一缩放，因此正文、标题和 KaTeX 公式保持比例。 */
     font-size: var(--site-font-size);
+    /*
+      issue #128：整页左右偏移的根源是「竖排滚动条时有时无」。
+      标签页 / 百宝箱内容不足一屏 → 没有滚动条 → 内容宽出约 10px；回到首页 / 文章页
+      又缩回去，页头与正文一起左右跳。这里让滚动条槽位恒定保留，短页也留位，跳页就不动了。
+
+      为什么 html 与 body 都要写：浏览器把「视口」的 overflow / scrollbar-gutter 取自根元素，
+      而根元素为 visible 时又改成取自 body（本项目的弹层锁滚动正是给 body 写 overflow:hidden，
+      编辑器全屏则是写在 html 上）。只声明一处会漏掉另一条传播路径，锁滚动时照样抖一下。
+      overflow:hidden 也是滚动容器，所以 stable 的槽位在锁定期间依然保留 —— 不需要再用
+      padding 去手工补宽度（补了反而会双重偏移）。
+    */
+    scrollbar-gutter: stable;
   }
 
   body {
     @apply text-ink-800 antialiased dark:text-ink-200;
+    /* 见上面 html 的说明：body 是弹层锁滚动时被读取的那一层。 */
+    scrollbar-gutter: stable;
     background-color: var(--site-background);
     background-image:
       radial-gradient(var(--site-background-gradient-size-1) at -14% -18%, var(--site-background-tint-primary), transparent var(--site-background-gradient-stop-1)),
@@ -841,6 +855,47 @@ details[open] .callout-chevron {
 .editor-textarea {
   tab-size: 2;
   line-height: 1.75;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  编辑区行号栏（issue #127）                                                 */
+/*  数字按「镜像层测出的真实行位置」绝对定位，所以一行折成多个视觉行时编号不会错位； */
+/*  整列随 textarea 的 scrollTop 用 transform 平移，滚动过程不触发 React 重渲染。   */
+/* -------------------------------------------------------------------------- */
+.editor-textarea-with-gutter {
+  /* 与 .editor-gutter 的宽度一致：文字从这一栏右边开始，不会被数字压住 */
+  padding-left: 3.5rem;
+}
+
+.editor-gutter {
+  position: absolute;
+  /* 顶到底都占满：编辑区可见区域有多高，这一栏就有多高，超出部分裁掉 */
+  inset: 0 3.25rem 0 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  /* 字号与行高必须和 .editor-textarea 一致（14px / 1.75），数字才会正好落在每一行的第一行上 */
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.75;
+  opacity: 0.75;
+  color: rgba(133, 145, 171, 0.9);
+  background: linear-gradient(to right, transparent, rgba(236, 238, 242, 0.72));
+  border-right: 1px solid rgba(213, 217, 226, 0.7);
+  contain: layout paint;
+}
+
+.dark .editor-gutter {
+  color: rgba(102, 115, 145, 0.95);
+  background: linear-gradient(to right, transparent, rgb(255 255 255 / 0.035));
+  border-right-color: rgb(255 255 255 / 0.08);
+}
+
+.editor-gutter-line {
+  position: absolute;
+  right: 0.6rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 @media print {

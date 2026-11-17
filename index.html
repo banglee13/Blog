@@ -109,6 +109,47 @@
             root.style.setProperty('--font-mono', quoteFamilies(monoFamilies) + ', ' + MONO_FALLBACK)
           }
 
+          // 固定背景图（issue #126）：先把图铺在 body 上，等 React 的图层接管后再删掉这段临时样式，
+          // 于是刷新时不会出现「纯底色 → 背景图」的跳变。真正的图层（含跟随滚动、覆盖层）
+          // 由 src/components/BackgroundImageLayer.tsx 负责，它挂载时负责 remove 这个 <style>。
+          var savedBackgroundImage = personalSettings && personalSettings.backgroundImage
+          var bootBgUrl =
+            savedBackgroundImage && savedBackgroundImage.enabled && typeof savedBackgroundImage.url === 'string'
+              ? savedBackgroundImage.url.trim()
+              : ''
+          // 白名单与 src/lib/backgroundImage.ts 一致：只接受 data:image 或 http(s)，
+          // 且不含引号 / 反斜杠 / 换行，避免拼进 CSS 时被截断。
+          // 离线版常见用法是 file:// 直接双击打开：那种情况下不铺远程图（不联网是它的承诺），
+          // 只有同目录里存的 base64 背景才生效。
+          var isFileProtocol = window.location.protocol === 'file:'
+          var bootBgAllowed =
+            bootBgUrl &&
+            bootBgUrl.indexOf('"') === -1 &&
+            bootBgUrl.indexOf('\\') === -1 &&
+            !/[\n\r]/.test(bootBgUrl) &&
+            (/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(bootBgUrl) ||
+              (!isFileProtocol && /^https?:\/\/.+$/i.test(bootBgUrl)))
+          if (bootBgAllowed) {
+            var bgFit = savedBackgroundImage.fit === 'contain' ? 'contain' : 'cover'
+            var bgDim = Number(savedBackgroundImage.dim)
+            var dimAlpha = isFinite(bgDim) ? Math.max(0, Math.min(80, bgDim)) / 100 : 0
+            var bgStyle = document.createElement('style')
+            bgStyle.id = 'starlog-boot-bg'
+            bgStyle.textContent =
+              'body{background-image:' +
+              (dimAlpha > 0
+                ? 'linear-gradient(rgba(13,16,23,' + dimAlpha.toFixed(3) + '),rgba(13,16,23,' + dimAlpha.toFixed(3) + ')),'
+                : '') +
+              'url("' +
+              bootBgUrl +
+              '");background-size:' +
+              bgFit +
+              ';background-position:center top;background-repeat:no-repeat;background-attachment:' +
+              (savedBackgroundImage.fixed === false ? 'scroll' : 'fixed') +
+              ';}'
+            document.head.appendChild(bgStyle)
+          }
+
           var savedBackground =
             (personalSettings && personalSettings.background) ||
             JSON.parse(localStorage.getItem('starlog:background') || 'null')
