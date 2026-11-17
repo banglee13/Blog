@@ -22,6 +22,25 @@
       // 防止主题、字体与背景在首屏闪烁。
       ;(function () {
         var root = document.documentElement
+
+        // issue #128：切页时整页左右跳，根源是「竖排滚动条时有时无」—— 标签页 / 百宝箱内容不足一屏
+        // 就没有滚动条，内容宽出约 15px，回到首页 / 文章页又缩回去。让槽位恒定保留（短页也留位）就不跳了；
+        // 弹层锁滚动与编辑器全屏写的是 overflow:hidden，它同样是滚动容器，槽位在锁定期间照样保留，
+        // 所以不需要再用 padding 手工补宽度（补了反而双重偏移）。html 与 body 都要写：浏览器把「视口」的
+        // overflow / scrollbar-gutter 取自根元素，根元素为 visible 时才改取 body（本项目两处都碰过），
+        // 只声明一处会漏掉另一条传播路径。
+        //
+        // 这段规则既不写在 src/styles/index.css，也不写成 index.html 里的 <style>：
+        //   · 那份样式表同时是 VS Code 插件预览的来源（vscode_extensions/v1/build.mjs 直接编译它，
+        //     而 html / body 这类外壳选择器按约定不加命名空间），视口级规则会跟着缩窄插件预览，
+        //     插件的「真实浏览器排版对照」测试就是这样挂的；
+        //   · HTML 里的 <style> 会被 Vite 抽成一条独立 CSS 资源，而离线单文件构建假定「只有一个 CSS」，
+        //     这个几十字节的小块会顶掉真正的那份（verify-offline 会以「@font-face 0 条」报出来）。
+        // 所以在首屏脚本里注入，只作用于博客自己的文档，且在首次绘制之前就已生效。
+        var gutterStyle = document.createElement('style')
+        gutterStyle.id = 'starlog-scroll-gutter'
+        gutterStyle.textContent = 'html,body{scrollbar-gutter:stable}'
+        document.head.appendChild(gutterStyle)
         var systemDark = false
         try {
           systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches

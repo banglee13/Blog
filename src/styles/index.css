@@ -297,28 +297,20 @@
     --site-header-surface: var(--theme-surface-dark);
   }
 
+  /*
+    issue #128 的「滚动条槽位常驻」（html / body 上的 scrollbar-gutter）写在 index.html 的
+    <style> 里，不在这里 —— 这份样式表同时是 VS Code 插件预览的来源（vscode_extensions/v1/build.mjs
+    会把 src/styles/index.css 编译进 preview.css，且 html / body 这类外壳选择器按约定不加命名空间），
+    视口级规则跟着进宿主页面就会无端缩窄插件预览，插件那条「真实浏览器排版对照」测试也会因此误报。
+  */
   html {
     -webkit-tap-highlight-color: transparent;
     /* 字号偏好在根节点统一缩放，因此正文、标题和 KaTeX 公式保持比例。 */
     font-size: var(--site-font-size);
-    /*
-      issue #128：整页左右偏移的根源是「竖排滚动条时有时无」。
-      标签页 / 百宝箱内容不足一屏 → 没有滚动条 → 内容宽出约 10px；回到首页 / 文章页
-      又缩回去，页头与正文一起左右跳。这里让滚动条槽位恒定保留，短页也留位，跳页就不动了。
-
-      为什么 html 与 body 都要写：浏览器把「视口」的 overflow / scrollbar-gutter 取自根元素，
-      而根元素为 visible 时又改成取自 body（本项目的弹层锁滚动正是给 body 写 overflow:hidden，
-      编辑器全屏则是写在 html 上）。只声明一处会漏掉另一条传播路径，锁滚动时照样抖一下。
-      overflow:hidden 也是滚动容器，所以 stable 的槽位在锁定期间依然保留 —— 不需要再用
-      padding 去手工补宽度（补了反而会双重偏移）。
-    */
-    scrollbar-gutter: stable;
   }
 
   body {
     @apply text-ink-800 antialiased dark:text-ink-200;
-    /* 见上面 html 的说明：body 是弹层锁滚动时被读取的那一层。 */
-    scrollbar-gutter: stable;
     background-color: var(--site-background);
     background-image:
       radial-gradient(var(--site-background-gradient-size-1) at -14% -18%, var(--site-background-tint-primary), transparent var(--site-background-gradient-stop-1)),

@@ -3137,12 +3137,19 @@ test('issue #128：滚动条槽位固定 + 弹层滚动锁不顶页面 + 背景�
 
   /* ---- 位移抖动：槽位常驻 + 所有会锁滚动的地方都走同一个 refcount ---- */
   const css = readFileSync(join(root, 'src/styles/index.css'), 'utf8')
-  const gutterRules = css.match(/html\s*\{[^}]*\}/g) ?? []
-  assert.ok(
-    gutterRules.some((rule) => rule.includes('scrollbar-gutter: stable')),
-    'html 要固定预留滚动条槽位',
+  const shellHtml = readFileSync(join(root, 'index.html'), 'utf8')
+  assert.match(
+    shellHtml,
+    /['"]html,\s*body\s*\{[^}]*scrollbar-gutter:\s*stable[^}]*\}['"]/,
+    'html 与 body 都要固定预留滚动条槽位（只写一处时，锁滚动的内核仍会跳）',
   )
-  assert.ok(/body\s*\{[^}]*scrollbar-gutter:\s*stable/.test(css), 'body 也要一起声明，否则部分内核只锁 html 时仍会跳')
+  assert.ok(
+    shellHtml.includes("gutterStyle.id = 'starlog-scroll-gutter'"),
+    '注入的那条样式要有 id，方便排查；也不要顺手写成 <style> 标签（会被 Vite 抽成独立 CSS 资源）',
+  )
+  // 视口级规则不能进共享样式表：src/styles/index.css 会被插件编译成预览样式，
+  // 跟着进宿主页面就会缩窄插件预览，并让「真实浏览器排版对照」测试误报（CI 上真挂过）。
+  assert.ok(!/scrollbar-gutter\s*:/.test(css), 'scrollbar-gutter 只写在 index.html，不写进 src/styles/index.css')
   assert.ok(!/overflow-y:\s*scroll/.test(css), '不要用 overflow-y: scroll 硬占位（锁滚时会留一条空白槽）')
   for (const file of ['src/components/SearchDialog.tsx', 'src/components/LatexPicker.tsx', 'src/pages/Editor.tsx']) {
     const src = readFileSync(join(root, file), 'utf8')

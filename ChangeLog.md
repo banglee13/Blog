@@ -236,8 +236,13 @@
 
 ### 调整
 
-- `src/styles/index.css` 给 `html` **与** `body` 同时声明 `scrollbar-gutter: stable`：槽位常驻，切页不再左右跳；
-  没有用 `overflow-y: scroll` 硬占位（那样锁滚动时会留一条空白槽），也不再用 `padding-right` 补偿。
+- `index.html`：`html, body { scrollbar-gutter: stable }`，让滚动条槽位常驻。
+  这条规则**故意写在 HTML 里而不是 `src/styles/index.css`**：那份样式表同时是 VS Code 插件预览的来源
+  （`vscode_extensions/v1/build.mjs` 会把它编译进 `preview.css`，而 `html` / `body` 这类外壳选择器按约定
+  不加命名空间），视口级规则跟着进宿主页面就会无端缩窄插件预览 —— 写在 CSS 里时插件的
+  「真实浏览器排版对照」测试正是在 `.katex-display` 上量出 868px / 863px 的差异而挂掉（PR 的 CI 抓到，本地因为
+  没有 Chromium 会跳过那几条而看不出来）。`npm test` 现在双向断言：规则必须在 `index.html`，且不得出现在
+  `src/styles/index.css` 里。
 - 动态背景 `AnimatedBackdrop` 改为 `lazy()` + `Suspense fallback={null}`，从入口 chunk 拆出去（独立 43.96 kB / gzip 16.57 kB），
   背景层加载完再淡入。
 - `src/lib/posts.ts`：仓库文章解析加缓存 `repoPostsCache`（缓存键：离线版取本机隐藏 slug 列表，线上版构建期内联、恒为空串）、
