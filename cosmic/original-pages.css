@@ -1,6 +1,6 @@
 /* Transparent to the original background settings. Only the default celestial
    palette is changed; user-selected chromatic themes still own their accent. */
-:root:not([data-starlog-theme]) {
+:root:has(.stellar-page):not([data-starlog-theme]) {
   --theme-surface-light: #edf1f9;
   --theme-surface-dark: #0b1021;
   --theme-glow-primary-light: rgba(113, 158, 202, 0.16);

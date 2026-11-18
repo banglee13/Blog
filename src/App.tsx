@@ -1,13 +1,10 @@
 import { Suspense, lazy } from 'react'
-import { Navigate, Route, Routes, useParams } from 'react-router-dom'
+import { Route, Routes } from 'react-router-dom'
 import { Layout } from './components/Layout'
+import { useBackground } from './lib/background'
+import Home from './pages/Home'
+
 const GalaxyHome = lazy(() => import('../cosmic/GalaxyHome'))
-
-function ArticleAlias() {
-  const { slug = '' } = useParams()
-  return <Navigate replace to={'/posts/' + encodeURIComponent(slug)} />
-}
-
 const PostPage = lazy(() => import('./pages/PostPage'))
 const Archive = lazy(() => import('./pages/Archive'))
 const TagsPage = lazy(() => import('./pages/TagsPage'))
@@ -30,12 +27,13 @@ function Loading() {
 }
 
 export default function App() {
+  const { siteLayout } = useBackground()
   return (
     <Suspense fallback={<Loading />}>
       <Routes>
-        <Route index element={<GalaxyHome />} />
-        <Route path="post/:slug" element={<ArticleAlias />} />
+        {siteLayout === 'galaxy' && <Route index element={<GalaxyHome />} />}
         <Route element={<Layout />}>
+          {siteLayout !== 'galaxy' && <Route index element={<Home />} />}
           <Route path="posts/:slug" element={<PostPage />} />
           <Route path="archive" element={<Archive />} />
           <Route path="tags" element={<TagsPage />} />

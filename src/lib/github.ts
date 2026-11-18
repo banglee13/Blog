@@ -1179,11 +1179,13 @@ export interface GithubAnimatedBackgroundPreference {
   values: Record<string, Record<string, number>>
 }
 
+export type SiteLayoutPreference = 'classic' | 'galaxy'
+
 /**
  * 账号外观偏好文件（`background-preferences/<login>.json`）。
  *
  * version 2 只保存渐变背景色与强度；version 3 起同时保存配色主题、明暗模式
- * 与动态背景场景参数，旧文件仍然可以正常读取（缺少的字段按本地默认值处理）。
+ * 与动态背景场景参数，version 4 加入站点外观。缺少的字段沿用本机设置。
  */
 export interface GithubBackgroundPreference {
   color: string
@@ -1195,6 +1197,7 @@ export interface GithubBackgroundPreference {
   themeMode?: string
   /** 动态背景场景与每个场景各自的参数 */
   animatedBackground?: GithubAnimatedBackgroundPreference
+  siteLayout?: SiteLayoutPreference
 }
 
 const BACKGROUND_SETTINGS_DIR = '.starlog/settings/background-preferences'
@@ -1220,6 +1223,7 @@ export async function fetchGithubBackgroundPreference(
       colorTheme: typeof parsed.colorTheme === 'string' ? parsed.colorTheme : undefined,
       themeMode: typeof parsed.themeMode === 'string' ? parsed.themeMode : undefined,
       animatedBackground: parseAnimatedBackgroundPreference(parsed.animatedBackground),
+      siteLayout: parsed.siteLayout === 'classic' || parsed.siteLayout === 'galaxy' ? parsed.siteLayout : undefined,
     }
   } catch (err) {
     if (err instanceof Error && /找不到资源/.test(err.message)) return null
@@ -1257,12 +1261,13 @@ export function buildBackgroundPreferenceFile(
     text:
       JSON.stringify(
         {
-          version: 3,
+          version: 4,
           color: preference.color,
           intensity: preference.intensity,
           colorTheme: preference.colorTheme ?? '',
           themeMode: preference.themeMode ?? 'system',
           animatedBackground: preference.animatedBackground ?? { scene: 'none', values: {} },
+          siteLayout: preference.siteLayout,
           updatedAt: preference.updatedAt || Date.now(),
         },
         null,

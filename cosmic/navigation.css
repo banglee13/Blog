@@ -10,7 +10,7 @@
   .galaxy-viewport {
     animation: galaxy-arrival 360ms ease-out both;
   }
-  #root > .relative.flex.min-h-screen {
+  #root > .stellar-page {
     animation: article-arrival 300ms ease-out;
   }
 }

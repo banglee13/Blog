@@ -46,6 +46,7 @@ import { OFFLINE } from '../lib/runtime'
 import type { PostHistoryVersion } from '../lib/github'
 import type { Post } from '../lib/types'
 import { usePosts } from '../lib/usePosts'
+import { useBackground } from '../lib/background'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import { siteConfig } from '../lib/config'
@@ -306,6 +307,7 @@ export default function PostPage() {
   const { slug = '' } = useParams()
   const navigate = useNavigate()
   const [posts] = usePosts(true)
+  const { siteLayout } = useBackground()
   const { isAuthed } = useAuth()
   const toast = useToast()
   const [showTop, setShowTop] = useState(false)
@@ -331,6 +333,10 @@ export default function PostPage() {
   const historyBase = repoPost || post
   const snapshot = historicalPost || post
   const visiblePost = unlockedPost || snapshot
+  const published = useMemo(() => posts.filter((item) => !item.draft), [posts])
+  const index = published.findIndex((item) => item.slug === slug)
+  const previous = index > 0 ? published[index - 1] : undefined
+  const next = index >= 0 && index < published.length - 1 ? published[index + 1] : undefined
   const toc = useMemo(() => (visiblePost && !isEncryptedPost(visiblePost) ? extractToc(visiblePost.content) : []), [visiblePost])
   // 文首排版指令（issue #59）：加密文章未解锁时正文仍是密文包装、解析为空，
   // 解锁 / 切到历史版本后 visiblePost 变化会自然重算。
@@ -630,6 +636,12 @@ export default function PostPage() {
           </header>
           {coverSrc && <img src={coverSrc} alt="" className="mt-8 w-full rounded-2xl object-cover shadow-xl" />}
           <div className="mt-8" data-yield-list><Markdown content={article.content} /></div>
+          {siteLayout === 'classic' && (previous || next) && <div className="no-print mt-16 border-t border-ink-200/60 pt-8 dark:border-white/[0.08]">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {previous ? <Link to={`/posts/${previous.slug}`} className="card group flex flex-col p-4 transition hover:border-brand-300 dark:hover:border-brand-400/30"><span className="text-xs text-ink-400">← 上一篇</span><span className="mt-1 line-clamp-2 text-sm font-medium text-ink-800 group-hover:text-brand-600 dark:text-ink-100 dark:group-hover:text-brand-300">{previous.title}</span></Link> : <span />}
+              {next && <Link to={`/posts/${next.slug}`} className="card group flex flex-col p-4 text-right transition hover:border-brand-300 dark:hover:border-brand-400/30"><span className="text-xs text-ink-400">下一篇 →</span><span className="mt-1 line-clamp-2 text-sm font-medium text-ink-800 group-hover:text-brand-600 dark:text-ink-100 dark:group-hover:text-brand-300">{next.title}</span></Link>}
+            </div>
+          </div>}
           <Comments postSlug={article.slug} postTitle={article.title} />
         </article>
         <Toc items={toc} />

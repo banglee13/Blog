@@ -1,6 +1,6 @@
 # 星野笔记 · Starlog
 
-桌面首页是一张全屏 Three.js 星图。拖动星图改变观察角度，横向旋转跟随拖动方向，滚轮向上放大、向下缩小。点击带淡灰色标题的恒星进入文章，点击星核打开导航。其他页面沿用原有组件和字体，采用群星背景；点击右下角的星轨图标打开「星核导航」，悬停或用键盘聚焦会显示名称。回声洞与全屏编辑保持独占视图。
+默认使用经典版式。在 **设置 → 站点外观** 选择「星系」，桌面首页变为全屏 Three.js 星图：拖动环视、滚轮缩放，点击恒星阅读文章。首页点击星核打开导航，内页使用群星背景和右下角的星轨入口。两种外观共用相同的文章、组件与字体，可随时切换。
 
 星图从公开文章列表生成。向 `content/posts/` 加入 Markdown 并重新构建即可增加文章恒星；离线版在本机发布后直接更新。星位由文章 slug 决定。运行 `npm ci`、`npm run dev` 可本地预览，也可直接打开 [离线单文件](offline/index.html)。合并时保留 `cosmic/`、`src/App.tsx` 的首页路由和 `src/main.tsx` 的样式接入。
 
@@ -262,11 +262,11 @@ Pages 项目 **Settings → Environment variables** 中新增 `VITE_GITHUB_CLIEN
 
 ### 账号外观同步
 
-配色主题、明暗模式、渐变背景与动态背景属于同一组「外观偏好」。登录并连接 GitHub 后，
+站点外观、配色主题、明暗模式、渐变背景与动态背景属于同一组「外观偏好」。登录并连接 GitHub 后，
 在 **设置 → 外观偏好同步** 点「同步外观到 GitHub」会把它们一起加入待更新队列，
 统一更新时写入仓库的 `.starlog/settings/background-preferences/<login>.json`
-（每个账号一个文件，`version: 3`，含 `colorTheme`、`themeMode`、`background` 与 `animatedBackground`）。
-换一台设备登录同一账号时会读取该文件并自动恢复；旧版只含背景颜色的 `version: 2` 文件仍可读取。
+（每个账号一个文件，`version: 4` 新增 `siteLayout`）。
+换一台设备登录同一账号时会读取该文件并自动恢复；旧版偏好文件仍可读，缺少的站点外观沿用本机设置。离线版也可切换，外观只保存在本机。
 字体与字号使用独立的 `.starlog/settings/font-preferences/<login>.json`。
 
 ---

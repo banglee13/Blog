@@ -22,6 +22,8 @@ import {
   Trees,
   Paintbrush,
   Palette,
+  Orbit,
+  PanelsTopLeft,
   Plus,
   RotateCcw,
   Save,
@@ -492,6 +494,8 @@ export default function SettingsPage() {
   const { font, accountSync, setFontSize, resetFont, saveForGithub } = useFont()
   const {
     background,
+    siteLayout,
+    setSiteLayout,
     accountSync: appearanceAccountSync,
     setBackground,
     resetBackground,
@@ -639,6 +643,29 @@ export default function SettingsPage() {
       </header>
 
       <div className="space-y-5" data-yield-list>
+        <Section title="站点外观" icon={PanelsTopLeft}>
+          <div role="radiogroup" aria-label="站点外观" className="inline-grid max-w-full grid-cols-2 gap-1 rounded-lg border border-ink-200 bg-ink-100/60 p-1 dark:border-white/15 dark:bg-white/5">
+            {([
+              { id: 'classic', label: '经典', Icon: PanelsTopLeft },
+              { id: 'galaxy', label: '星系', Icon: Orbit },
+            ] as const).map(({ id, label, Icon }) => (
+              <label key={id} className="relative cursor-pointer">
+                <input
+                  className="peer sr-only"
+                  type="radio"
+                  name="site-layout"
+                  checked={siteLayout === id}
+                  onChange={() => setSiteLayout(id)}
+                />
+                <span className="flex min-h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-transparent px-3 text-sm font-medium text-ink-600 hover:text-ink-900 peer-checked:border-brand-500/35 peer-checked:bg-white peer-checked:text-brand-700 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-brand-500 dark:text-ink-300 dark:hover:text-white dark:peer-checked:bg-brand-500/15 dark:peer-checked:text-brand-200">
+                  <Icon size={16} aria-hidden="true" />
+                  {label}
+                </span>
+              </label>
+            ))}
+          </div>
+        </Section>
+
         {/* ------------------------------ 配色主题 ----------------------------- */}
         <Section
           title="配色主题"
@@ -868,7 +895,7 @@ export default function SettingsPage() {
         {!OFFLINE && (
           <Section
           title="外观偏好同步"
-          desc="把配色主题、明暗模式、背景渐变与动态背景一起保存到 GitHub 账号；在其他设备登录同一账号后会读取并恢复。"
+          desc="把站点外观、配色主题、明暗模式与背景一起保存到 GitHub 账号；在其他设备登录同一账号后会读取并恢复。"
           icon={Cloud}
         >
           {canPublish && ghUser ? (
