@@ -103,19 +103,6 @@ function assert(condition, message) {
   if (!condition) throw new Error(`[single-html] ${message}`)
 }
 
-/** Collect attributes of actual HTML tags. Raw script/style text can contain
- * example markup, template fragments, and expressions that are not asset URLs. */
-export function htmlAssetRefs(html) {
-  const shell = html.replace(/(<(script|style)\b[^>]*>)[\s\S]*?<\/\2\s*>/gi, '$1')
-  const refs = []
-  for (const [tag] of shell.matchAll(/<[a-z][^<>]*>/gi)) {
-    for (const match of tag.matchAll(/\s(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
-      refs.push(match[1] ?? match[2] ?? match[3])
-    }
-  }
-  return refs
-}
-
 /**
  * @param {object} [options]
  * @param {string} [options.root]  项目根目录（解析 public/ 下的资源用）
@@ -139,9 +126,6 @@ export function singleHtmlPlugin(options = {}) {
       const attrs = match[0]
       if (!/rel\s*=\s*["'](?:icon|shortcut icon|apple-touch-icon|mask-icon)["']/i.test(attrs)) continue
       if (/^(https?:|data:|\/\/)/i.test(href)) continue
-      // Vite replaces imported asset placeholders after this HTML transform.
-      // The generateBundle asset check below verifies the resolved reference.
-      if (/^__VITE_ASSET__[\w$-]+__$/.test(href)) continue
       const relative = href.replace(/^\.?\//, '').replace(/^%BASE_URL%\/?/, '')
       const file = resolve(root, 'public', basename(relative))
       if (!existsSync(file)) {
@@ -212,12 +196,8 @@ export function singleHtmlPlugin(options = {}) {
           ['html', html],
         ]) {
           if (!code.includes(name)) continue
-          let next = code
-          for (const specifier of new Set([`./${key}`, `/${key}`, key, name])) {
-            const parts = next.split(specifier)
-            replaced += parts.length - 1
-            next = parts.join(dataUri)
-          }
+          const next = code.split(name).join(dataUri)
+          replaced += code.split(name).length - 1
           if (label === 'js') js = next
           else if (label === 'css') css = next
           else html = next
@@ -258,7 +238,7 @@ export function singleHtmlPlugin(options = {}) {
         : `${html}${scriptTag}`
 
       // ---------- 3) 收尾自检 ----------
-      const refs = htmlAssetRefs(html)
+      const refs = [...html.matchAll(/(?:src|href)\s*=\s*["']([^"'#]+)["']/gi)].map((match) => match[1])
       const broken = refs.filter(
         (url) =>
           !url.startsWith('data:') &&

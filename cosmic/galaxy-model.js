@@ -1,4 +1,5 @@
 import * as THREE from './vendor/three.module.min.js'
+import { articlePosition } from './galaxy-catalog.js'
 
 const TAU = Math.PI * 2
 const lerp = (a, b, t) => a + (b - a) * t
@@ -93,178 +94,230 @@ function population(count, sample, radiant = false) {
 }
 
 export function makeGalaxyModel(articles) {
-  const random = makeRandom(983094)
-  const normal = () => random() + random() + random() - 1.5
-  const branches = [0, 0.32, 2.92, 3.21, 1.39, 4.72]
-  // Dust structure is coherent among nearby stars, clouds and star clusters.
-  // Warped logarithmic arms break into spurs well outside the compact bulge.
-  function armSample(cloud) {
-    const branch = Math.floor(random() * branches.length)
-    const r = 0.024 + 0.98 * Math.pow(random(), 0.66)
-    const arm = branches[branch]
-    const randomOffset = normal()
-    const pitch = 3.08 * Math.log(r + 0.18) + 3.48
-    const spread = (0.17 + Math.pow(r, 1.4) * 0.24) * (branch > 3 ? 1.5 : 1)
-    let a = arm + pitch + 0.1 * Math.sin(r * 12 + arm) + randomOffset * spread
-    if (random() < 0.19) a += normal() * 1.95
-    const bend = (noise(r * 8, arm * 4) - 0.5) * 0.18
-    a += bend
-    let x = r * Math.cos(a),
-      y = r * Math.sin(a)
-    const turbulent =
-      noise(x * 7 + 23, y * 7 + 13) * 0.49 +
-      noise(x * 21 - 8, y * 21) * 0.3 +
-      noise(x * 53, y * 53 + 92) * 0.16 +
-      noise(x * 131, y * 131) * 0.05
-    const fine = noise(x * 49 + turbulent * 5, y * 49)
-    const lane =
-      0.25 +
-      0.75 *
-        Math.min(
-          1,
-          Math.abs(randomOffset + 0.21 + (turbulent - 0.5) * 2.3) * 3.4,
-        )
-    const taper = Math.min(1, (1.04 - r) / 0.22)
-    const dust =
-      (0.29 + 0.96 * Math.max(0.01, (turbulent - 0.23) * 2.67) ** 1.55) *
-      (0.3 + 0.7 * lane) *
-      taper
-    const warm = Math.exp((-r * r) / 0.12)
-    const rose = Math.max(0, (noise(x * 15 + 87, y * 15 + 43) - 0.65) * 2.6)
-    const color = [
-      0.48 + 0.5 * warm + 0.28 * rose,
-      0.63 + 0.12 * warm - 0.1 * rose,
-      0.88 - 0.44 * warm - 0.04 * rose,
-    ]
-    const stray = random()
-    let z = normal() * (0.024 + 0.018 * r) + 0.014 * Math.sin(a * 2 + r * 6) * r
-    z += 0.03 * r * (noise(x * 7 + 3, y * 7 - 1) - 0.5)
-    if (cloud) {
-      return [
-        x,
-        y,
-        z,
-        ...color,
-        (0.068 + fine * 0.052) * dust * (1 - 0.36 * r),
-        0.014 + random() * 0.057,
-      ]
-    }
-    const giant = stray > 0.989
-    const size = giant ? 0.004 + random() * 0.006 : 0.001 + random() * 0.0035
-    const sparkle = 0.74 + random() * 0.26
+  const random = makeRandom(197904)
+  const bell = () => random() + random() + random() + random() - 2
+  const clip = (x) => Math.max(0, Math.min(1, x))
+  const golden = [1, 0.74, 0.45],
+    pearl = [0.85, 0.81, 0.76],
+    ice = [0.53, 0.68, 0.96]
+  const armPhase = (r) => 2.72 * Math.log(1 + r / 0.24) - 1.7
+  const branches = [0, Math.PI, 0.38, Math.PI + 0.43]
+  const body = new THREE.Group()
+
+  // A thin exponential disk of old stars makes the interior continuous. Spiral
+  // arms are overdensities in that disk, not separate isolated ropes of gas.
+  function diskPos() {
+    const r = Math.min(
+      1.28,
+      -Math.log(Math.max(1e-6, random() * random())) * 0.242,
+    )
+    const t = random() * TAU,
+      z = bell() * (0.025 + 0.023 * r)
+    return [r * Math.cos(t), r * Math.sin(t), z, r]
+  }
+  function oldDisk(cloud) {
+    const [x, y, z, r] = diskPos(),
+      warm = Math.exp(-r * 2.75)
+    const a = clip((1.22 - r) * 4) * (cloud ? 0.027 : 0.38)
     return [
       x,
       y,
       z,
-      ...color.map((c) => c * sparkle),
-      (0.32 + random() * 0.63) * dust,
-      size,
+      0.56 + 0.41 * warm,
+      0.62 + 0.14 * warm,
+      0.84 - 0.3 * warm,
+      a,
+      cloud ? 0.025 + random() * 0.078 : 0.0012 + random() * 0.0041,
     ]
   }
-  function bulge(cloud) {
-    const radius = Math.min(
-      0.64,
-      Math.sqrt(-Math.log(Math.max(0.0001, random()))) *
-        (cloud ? 0.125 : 0.166),
-    )
-    const t = random() * TAU,
-      z = random() * 2 - 1,
-      xy = Math.sqrt(1 - z * z)
-    const extinction = 0.77 + 0.23 * noise(radius * 60 + Math.cos(t) * 2, z * 3)
-    const heat = Math.exp(-radius / 0.13),
-      cream = Math.exp(-radius / 0.046)
-    const color = [
-      0.92 + 0.08 * heat,
-      0.66 + 0.22 * cream,
-      0.4 + 0.31 * cream + 0.1 * (1 - heat),
-    ]
-    return [
-      radius * xy * Math.cos(t),
-      radius * xy * Math.sin(t),
-      radius * z * 0.34,
-      ...color,
-      (cloud ? 0.06 : 0.2 + random() * 0.39) * extinction,
-      cloud ? 0.017 + random() * 0.046 : 0.0014 + random() * 0.0043,
-    ]
+
+  function path(branch, r) {
+    // Major arms open out after leaving the bulge and bifurcate halfway
+    // through the disk. The two outer spurs have different lengths and pitch.
+    const side = branch % 2
+    let phi = armPhase(r) + branches[branch]
+    phi += 0.13 * Math.sin(5.7 * r + side * 0.8) + 0.19 * side * r * r
+    if (branch > 1) phi += (r - 0.4) * (0.43 + side * 0.32)
+    return phi
   }
-  const body = new THREE.Group()
-  const batches = [
-    population(27400, () => armSample(true)),
-    population(5200, () => bulge(true)),
-    population(104000, () => armSample(false)),
-    population(14500, () => bulge(false)),
-  ]
-  // Ribbons of interstellar dust sit just above the mid-plane. Their narrow
-  // spurs extinguish part of the rear emission, while foreground stars shine
-  // through. All of the knots retain depth as the observer circles the galaxy.
-  const dust = population(16000, () => {
-    const arm = branches[Math.floor(random() * branches.length)]
-    const r = 0.045 + 0.91 * random() ** 0.83
-    const bend = (noise(r * 8, arm * 4) - 0.5) * 0.18
-    let t =
-      arm +
-      3.08 * Math.log(r + 0.18) +
-      3.48 +
-      0.1 * Math.sin(r * 12 + arm) +
-      bend
-    t += 0.09 + 0.045 * Math.sin(18 * r + arm) + normal() * 0.069
-    if (random() < 0.28) t -= 0.12
-    const x = r * Math.cos(t),
-      y = r * Math.sin(t),
-      density = noise(x * 14 + 18, y * 14)
+  function armPos(phase) {
+    const f = random(),
+      branch = f < 0.44 ? 0 : f < 0.78 ? 1 : f < 0.91 ? 2 : 3
+    const lo = branch > 1 ? 0.32 : 0.072,
+      hi = [1.11, 0.97, 0.96, 0.86][branch]
+    const r = lo + (hi - lo) * random() ** 0.74
+    const t = path(branch, r),
+      n = bell()
+    const offset =
+      n * (0.043 + 0.088 * r) + (noise(r * 10, branch * 7) - 0.5) * 0.058
+    const radial = r + offset + phase
+    const x = radial * Math.cos(t),
+      y = radial * Math.sin(t)
+    const z = 0.016 * r * Math.sin(t * 2 - 0.3) + bell() * (0.016 + 0.013 * r)
+    const taper =
+      clip((hi - r) / (0.18 + 0.03 * branch)) * clip((r - 0.047) / 0.16)
+    return [x, y, z, r, taper]
+  }
+  const emission = (x, y) => {
+    const coarse = noise(6 * x + 25, 6 * y - 11),
+      mid = noise(21 * x + 80, 21 * y + 45),
+      fine = noise(73 * x, 73 * y)
+    return 0.11 + 1.6 * (0.51 * coarse + 0.33 * mid + 0.16 * fine) ** 2.2
+  }
+  function arm(cloud) {
+    const [x, y, z, r, taper] = armPos(cloud ? 0 : -0.006)
+    const lit = emission(x, y),
+      warm = Math.exp((-r * r) / 0.22)
+    const temp = [
+      ice[0] + 0.43 * warm,
+      ice[1] + 0.09 * warm,
+      ice[2] - 0.36 * warm,
+    ]
     return [
       x,
       y,
-      0.023 + normal() * 0.009,
-      0.023,
-      0.021,
-      0.026,
-      (0.09 + density * 0.23) * Math.min(1, (1 - r) / 0.31),
-      0.005 + 0.03 * random(),
+      z,
+      ...temp,
+      taper * lit * (cloud ? 0.092 : 0.5 + random() * 0.41),
+      cloud ? 0.017 + random() * 0.05 : 0.0015 + random() * 0.004,
+    ]
+  }
+
+  // Compact spheroidal bar and a more diffuse, vertically extended stellar
+  // bulge. Their shared central density peak remains recognizable edge-on.
+  function bulge(cloud) {
+    const r = Math.sqrt(-Math.log(Math.max(0.00001, random()))),
+      t = random() * TAU
+    const x = 0.184 * r * Math.cos(t),
+      y = 0.126 * r * Math.sin(t),
+      z = bell() * 0.063
+    const heat = Math.exp(-r * 1.8)
+    return [
+      x,
+      y,
+      z,
+      lerp(golden[0], pearl[0], heat),
+      lerp(golden[1], pearl[1], heat),
+      lerp(golden[2], pearl[2], heat),
+      cloud ? 0.055 : 0.35 + random() * 0.26,
+      cloud ? 0.023 + random() * 0.043 : 0.0016 + random() * 0.0043,
+    ]
+  }
+  const batches = [
+    population(14000, () => oldDisk(true)),
+    population(24500, () => arm(true)),
+    population(5600, () => bulge(true)),
+    population(49000, () => oldDisk(false)),
+    population(66000, () => arm(false)),
+    population(12300, () => bulge(false)),
+  ]
+
+  // Leading-edge dust lanes are narrow warped volumes, not black outlines.
+  // Core-side lanes are strongest; gaps and feathered ends leave starlight
+  // visible between them. Foreground stars render after the absorbing dust.
+  const dust = population(16000, () => {
+    const f = random(),
+      branch = f < 0.45 ? 0 : f < 0.84 ? 1 : f < 0.92 ? 2 : 3
+    const r =
+      (branch > 1 ? 0.34 : 0.065) +
+      (branch > 1 ? 0.51 : 0.88) * random() ** 0.83
+    const t = path(branch, r)
+    const width = 0.007 + 0.016 * r,
+      rr =
+        r -
+        0.035 -
+        r * 0.019 +
+        bell() * width +
+        (noise(r * 21, branch * 4) - 0.5) * 0.062
+    const x = rr * Math.cos(t),
+      y = rr * Math.sin(t),
+      z = 0.023 + 0.016 * r * Math.sin(t * 2 - 0.3) + bell() * 0.008
+    const gap = noise(11 * x + 32, 11 * y + 17) ** 1.6
+    return [
+      x,
+      y,
+      z,
+      0.07,
+      0.053,
+      0.044,
+      (0.058 + random() * 0.106) *
+        gap *
+        clip((0.99 - r) / 0.24) *
+        clip((r - 0.062) / 0.09),
+      0.009 + random() * 0.023,
     ]
   })
   dust.material.blending = THREE.NormalBlending
-  batches[2].renderOrder = batches[3].renderOrder = 3
   dust.renderOrder = 2
+  for (const batch of batches.slice(3)) batch.renderOrder = 3
   batches.push(dust)
-  // A compact, ellipsoidal, warmer inner bulge picks out the clickable centre.
+  // H II regions are sparse, correlated with the knots of the outer arms and
+  // surrounded by young blue stars rather than coloring the entire galaxy.
+  const knots = []
+  for (let i = 0; i < 350; i++) knots.push(armPos(-0.014))
+  const knotsCloud = population(6400, (i) => {
+    const p = knots[i % knots.length],
+      red = (i % knots.length) % 13 < 3 && p[3] > 0.31,
+      spread = 0.008 + random() * 0.013
+    return [
+      p[0] + bell() * spread,
+      p[1] + bell() * spread,
+      p[2] + bell() * 0.009,
+      red ? 1 : 0.53,
+      red ? 0.34 : 0.7,
+      red ? 0.59 : 1,
+      (red ? 0.112 : 0.068) * p[4],
+      (red ? 0.019 : 0.012) + random() * 0.027,
+    ]
+  })
+  const knotsStars = population(10300, (i) => {
+    const p = knots[i % knots.length],
+      spread = 0.007 + random() * 0.011
+    return [
+      p[0] + bell() * spread,
+      p[1] + bell() * spread,
+      p[2] + bell() * 0.009,
+      0.65,
+      0.79,
+      1,
+      (0.34 + random() * 0.45) * p[4],
+      0.0013 + random() * 0.0044,
+    ]
+  })
+  knotsStars.renderOrder = 4
+  batches.push(knotsCloud, knotsStars)
+  // The small luminous nucleus and a sparse spherical stellar halo make the
+  // galaxy visibly thicker than its outer disk in low-angle views.
   batches.push(
-    population(1750, () => {
-      const r = -Math.log(Math.max(0.002, random())) * 0.023,
+    population(1650, () => {
+      const r = -Math.log(Math.max(0.0002, random())) * 0.028,
         t = random() * TAU,
-        z = random() * 2 - 1
-      const xy = Math.sqrt(1 - z * z)
+        z = random() * 2 - 1,
+        xy = Math.sqrt(1 - z * z)
       return [
         r * xy * Math.cos(t),
         r * xy * Math.sin(t),
-        r * z * 0.48,
+        r * z * 0.66,
         1,
-        0.811,
-        0.541,
-        0.1,
-        0.007 + 0.013 * random(),
+        0.84,
+        0.6,
+        0.11,
+        0.005 + random() * 0.015,
       ]
     }),
   )
-  // Star-forming knots occupy local volumes along the arms instead of sitting
-  // on the surface of the disk. Each has its own substructure and temperature.
-  const clusters = []
-  for (let i = 0; i < 410; i++) clusters.push(armSample(false))
   batches.push(
-    population(11000, (i) => {
-      const host = clusters[i % clusters.length],
-        dx = normal() * 0.011,
-        dy = normal() * 0.011,
-        dz = normal() * 0.006
+    population(7000, () => {
+      const [x, y, z, r] = diskPos()
       return [
-        host[0] + dx,
-        host[1] + dy,
-        host[2] + dz,
-        0.63,
-        0.76,
-        1,
-        0.34 + random() * 0.39,
-        0.001 + random() * 0.004,
+        x,
+        y,
+        z * 4,
+        0.79,
+        0.78,
+        0.82,
+        0.21 + random() * 0.24,
+        0.0016 + random() * 0.004,
       ]
     }),
   )
@@ -286,19 +339,11 @@ export function makeGalaxyModel(articles) {
       0.0026 + shine * 0.0085,
     ]
   })
-  const anchors = articles.map((article, i) => {
-    const t = i * 2.39996 + 0.44
-    const radius = 0.36 + 0.63 * (0.3 + (0.7 * ((i * 7 + 3) % 17)) / 16)
-    return {
-      article,
-      point: new THREE.Vector3(
-        Math.cos(t) * radius,
-        Math.sin(t) * radius,
-        0.021 + 0.09 * Math.sin(i * 3.4),
-      ),
-      id: i,
-    }
-  })
+  const anchors = articles.map((article, i) => ({
+    article,
+    point: new THREE.Vector3(...articlePosition(article.slug || article.id)),
+    id: i,
+  }))
   const beacons = population(
     anchors.length,
     (i) => {
@@ -311,10 +356,60 @@ export function makeGalaxyModel(articles) {
   body.add(beacons)
   const center = population(1, () => [0, 0, 0, 1, 0.84, 0.52, 1, 0.13], true)
   body.add(center)
-  const all = [...batches, beacons, center, field]
+  // Nearby stars drift across the distant arms much faster when the eye moves.
+  const foreground = population(
+    155,
+    () => {
+      const z = lerp(0.38, 2.72, random()),
+        r = 2.8 * Math.sqrt(random()),
+        t = random() * TAU
+      const warm = random() < 0.25,
+        size = 0.012 + random() ** 3 * 0.043
+      return [
+        r * Math.cos(t),
+        r * Math.sin(t),
+        z,
+        warm ? 1 : 0.44,
+        warm ? 0.52 : 0.67,
+        warm ? 0.25 : 1,
+        0.61 + 0.38 * random(),
+        size,
+      ]
+    },
+    true,
+  )
+  foreground.renderOrder = 6
+  // A distant companion fixes the scale of the main disc during parallax.
+  // Both the blue disc and its warm nucleus occupy independent 3-D volumes.
+  const companion = population(4100, (i) => {
+    const nucleus = i < 1000
+    const radius = nucleus
+      ? 0.02 * Math.sqrt(-Math.log(Math.max(0.0001, random())))
+      : 0.135 * Math.sqrt(random())
+    const azimuth = nucleus
+      ? TAU * random()
+      : Math.PI * (i % 2) + radius * 22 + bell() * 0.53
+    const x = radius * Math.cos(azimuth),
+      y = radius * Math.sin(azimuth),
+      z = bell() * (nucleus ? 0.009 : 0.004)
+    const thinY = 0.48 * y + 0.88 * z
+    return [
+      -1.4 + 0.92 * x - 0.39 * thinY,
+      0.71 + 0.39 * x + 0.92 * thinY,
+      -2.2 - 0.88 * y + 0.48 * z,
+      nucleus ? 1 : 0.42,
+      nucleus ? 0.71 : 0.61,
+      nucleus ? 0.4 : 0.95,
+      nucleus ? 0.076 : 0.085 * (1 - radius / 0.15),
+      nucleus ? 0.008 + random() * 0.012 : 0.004 + random() * 0.012,
+    ]
+  })
+  const all = [...batches, beacons, center, field, foreground, companion]
   return {
     body,
     field,
+    foreground,
+    companion,
     anchors,
     setScale(scale, ratio) {
       for (const batch of all) {

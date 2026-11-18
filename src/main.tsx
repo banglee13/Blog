@@ -15,6 +15,7 @@ import { StorageGuard } from './components/StorageGuard'
 import { initOfflineStorage } from './lib/offlineStorage'
 import { OFFLINE } from './lib/runtime'
 import './styles/index.css'
+import '../cosmic/original-pages.css'
 
 const basename = import.meta.env.BASE_URL.replace(/\/$/, '')
 
@@ -37,6 +38,10 @@ function Tree() {
 }
 
 async function boot() {
+  // Previous desktop previews used hash links online as well as offline.
+  if (!OFFLINE && location.hash.startsWith('#/')) {
+    history.replaceState(history.state, '', basename + location.hash.slice(1))
+  }
   if (OFFLINE) {
     try {
       await initOfflineStorage()

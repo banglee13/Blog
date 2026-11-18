@@ -1,5 +1,6 @@
 import * as THREE from './vendor/three.module.min.js'
 import { makeGalaxyModel } from './galaxy-model.js'
+import { getLabelOrder } from './galaxy-catalog.js'
 
 const RAD = Math.PI / 180
 const CORE = -1
@@ -8,20 +9,6 @@ const ANGLE_LIMIT = 36
 const DISTANCE = 4
 const LABEL_FONT = '13px "Segoe UI","Microsoft YaHei",sans-serif'
 const clamp = THREE.MathUtils.clamp
-const preferred = [
-  'oi-dp-skill-1',
-  'katex-cheatsheet',
-  'oi-computerroom-setup-list',
-  'dark-mode-design-notes',
-  'typescript-utility-types',
-  'hello-starlog',
-  'is-your-ai-bad',
-  'my-problem-longest-point',
-]
-const namePriority = (a) => {
-  const i = preferred.indexOf(a.id)
-  return i === -1 ? 100 : i
-}
 
 function makeTitle(text) {
   const surface = document.createElement('canvas')
@@ -86,7 +73,14 @@ function accessibility(root, articles, onSelect, onFocus) {
 
 export function mountGalaxy(
   container,
-  { articles = [], onArticle, onCore, onRotate, initialAngle = 0 } = {},
+  {
+    articles = [],
+    onArticle,
+    onCore,
+    onRotate,
+    initialAngle = 0,
+    initialView,
+  } = {},
 ) {
   const root = document.createElement('div')
   root.className = 'gx-world'
@@ -105,12 +99,26 @@ export function mountGalaxy(
     disposed = false,
     active = true,
     lastFrame = 0
-  let angle = Number(initialAngle) || 0,
+  let angle = Number(initialView?.angle ?? initialAngle) || 0,
     target = angle,
     width = 0,
     height = 0,
     hover = NONE,
     focus = NONE
+  let orbitTilt = clamp(Number(initialView?.tilt) || 68, 8, 156),
+    tiltTarget = orbitTilt
+  let pointerX = 0,
+    pointerY = 0,
+    wantedX = 0,
+    wantedY = 0,
+    drag = null,
+    suppressClick = false
+  let flight = null,
+    arrival = 0,
+    flightTarget = null,
+    meteorTimer = 0,
+    meteorStart = 0,
+    meteorNumber = 0
   let renderState = 'webgl',
     labels = [],
     projected = [],
@@ -155,6 +163,10 @@ export function mountGalaxy(
       },
       rotate() {},
       reset() {},
+      approach: async () => true,
+      returnFrom: async () => true,
+      cancelTransition() {},
+      getView: () => ({ angle, tilt: orbitTilt }),
       getAngle: () => angle,
       setActive: (v) => {
         active = v
@@ -205,17 +217,37 @@ export function mountGalaxy(
   const bank = new THREE.Group(),
     tilt = new THREE.Group()
   model = makeGalaxyModel(articles)
-  scene.add(bank, model.field)
+  scene.add(bank, model.field, model.foreground, model.companion)
   bank.add(tilt)
   tilt.add(model.body)
-  bank.rotation.z = 14 * RAD
+  bank.rotation.z = 11 * RAD
   labels = articles.map((a) => makeTitle(a.title))
   for (const label of labels) overlay.add(label.sprite)
   projected = model.anchors.map(() => ({ x: 0, y: 0 }))
-  order = model.anchors
-    .map((a) => a.id)
-    .sort((a, b) => namePriority(articles[a]) - namePriority(articles[b]))
+  order = getLabelOrder(articles)
   const vector = new THREE.Vector3()
+  const aim = new THREE.Vector3(),
+    focusPoint = new THREE.Vector3()
+  const meteorGeometry = new THREE.BufferGeometry()
+  const streak = new Float32Array(6)
+  const streakPosition = new THREE.BufferAttribute(streak, 3)
+  meteorGeometry.setAttribute('position', streakPosition)
+  meteorGeometry.setAttribute(
+    'color',
+    new THREE.Float32BufferAttribute([0.013, 0.035, 0.059, 0.88, 0.89, 1], 3),
+  )
+  const meteorMaterial = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+  })
+  const meteor = new THREE.Line(meteorGeometry, meteorMaterial)
+  meteor.visible = false
+  meteor.frustumCulled = false
+  meteor.renderOrder = 7
+  scene.add(meteor)
   const coreScreen = { x: 0, y: 0 }
   function screenPoint(pos, out) {
     vector.copy(pos).applyMatrix4(model.body.matrixWorld).project(camera)
@@ -261,15 +293,30 @@ export function mountGalaxy(
       count++
       label.rect = rect
       sprite.position.set(left, height - top - label.height / 2, 0)
-      sprite.material.opacity = emphasis ? 1 : 0.83
+      sprite.material.opacity = (emphasis ? 1 : 0.83) * (1 - arrival * 0.95)
       sprite.visible = true
     }
   }
   function render() {
     if (disposed || !width || !height || renderState !== 'webgl') return
-    model.body.rotation.z = angle * RAD
-    tilt.rotation.x = (52 + 8 * Math.sin(angle * RAD * 0.5)) * RAD
-    model.field.rotation.y = Math.sin(angle * RAD) * 0.016
+    model.body.rotation.z = (angle + 42) * RAD
+    tilt.rotation.x = (orbitTilt + 6 * Math.sin(angle * RAD * 0.5)) * RAD
+    const bearing = angle * RAD
+    camera.position.set(
+      0.47 * pointerX + 0.13 * Math.sin(bearing),
+      -0.32 * pointerY + 0.08 * Math.sin(bearing * 0.67),
+      DISTANCE - 0.16 * Math.sin(bearing),
+    )
+    aim.set(pointerX * 0.054, -pointerY * 0.039, 0)
+    if (arrival && flightTarget) {
+      bank.updateMatrixWorld()
+      focusPoint.copy(flightTarget).applyMatrix4(model.body.matrixWorld)
+      aim.lerp(focusPoint, arrival * 0.86)
+      camera.position.x += arrival * (focusPoint.x * 0.64 + 0.06)
+      camera.position.y += arrival * focusPoint.y * 0.64
+      camera.position.z -= arrival * 1.36
+    }
+    camera.lookAt(aim)
     positionTitles()
     renderer.setRenderTarget(hdr)
     renderer.clear()
@@ -287,10 +334,45 @@ export function mountGalaxy(
       return
     const dt = lastFrame ? Math.min(64, time - lastFrame) : 16.7
     lastFrame = time
-    angle += (target - angle) * (1 - Math.exp(-dt / 68))
+    const easing = 1 - Math.exp(-dt / 78)
+    angle += (target - angle) * easing
     if (Math.abs(target - angle) < 0.035 || motion.matches) angle = target
+    tiltTarget = clamp(tiltTarget, 8, 156)
+    orbitTilt += (tiltTarget - orbitTilt) * easing
+    if (Math.abs(tiltTarget - orbitTilt) < 0.02 || motion.matches)
+      orbitTilt = tiltTarget
+    pointerX += (wantedX - pointerX) * easing
+    pointerY += (wantedY - pointerY) * easing
+    if (Math.abs(wantedX - pointerX) < 0.002 || motion.matches)
+      pointerX = wantedX
+    if (Math.abs(wantedY - pointerY) < 0.002 || motion.matches)
+      pointerY = wantedY
+    if (flight) {
+      const t = motion.matches
+        ? 1
+        : clamp((time - flight.start) / flight.duration, 0, 1)
+      arrival = THREE.MathUtils.lerp(
+        flight.from,
+        flight.to,
+        t * t * (3 - 2 * t),
+      )
+      if (t === 1) {
+        const finished = flight
+        flight = null
+        finished.done(true)
+      }
+    }
+    animateMeteor(time)
     render()
-    if (target !== angle) frame = requestAnimationFrame(tick)
+    if (
+      target !== angle ||
+      orbitTilt !== tiltTarget ||
+      pointerX !== wantedX ||
+      pointerY !== wantedY ||
+      flight ||
+      meteorStart
+    )
+      frame = requestAnimationFrame(tick)
     else lastFrame = 0
   }
   function invalidate() {
@@ -309,7 +391,7 @@ export function mountGalaxy(
     renderer.setPixelRatio(ratio)
     renderer.setSize(width, height, false)
     hdr?.setSize(Math.round(width * ratio), Math.round(height * ratio))
-    const radius = Math.min(width * 0.402, height * 0.67)
+    const radius = Math.min(width * 0.376, height * 0.675)
     camera.aspect = width / height
     camera.fov = (2 * Math.atan(height / (2 * radius * DISTANCE))) / RAD
     camera.updateProjectionMatrix()
@@ -344,8 +426,89 @@ export function mountGalaxy(
   }
   function rotate(delta) {
     if (!active || !Number.isFinite(delta)) return
+    if (flight) cancelTransition()
     target += delta
     invalidate()
+  }
+  function cancelTransition() {
+    if (flight) {
+      const current = flight
+      flight = null
+      current.done(false)
+    }
+    arrival = 0
+    flightTarget = null
+    invalidate()
+  }
+  function travel(id, reverse, options = {}) {
+    if (disposed || !active || options.signal?.aborted)
+      return Promise.resolve(false)
+    if (renderState !== 'webgl') return Promise.resolve(true)
+    cancelTransition()
+    const anchor =
+      id === 'core'
+        ? origin
+        : model.anchors.find(
+            (a) => a.article.id === id || a.article.slug === id,
+          )?.point
+    if (!anchor) return Promise.resolve(false)
+    flightTarget = anchor
+    arrival = reverse ? 1 : 0
+    const to = reverse ? 0 : 1
+    if (document.hidden || motion.matches) {
+      arrival = to
+      invalidate()
+      return Promise.resolve(true)
+    }
+    return new Promise((resolve) => {
+      const abort = () => cancelTransition()
+      const done = (value) => {
+        options.signal?.removeEventListener('abort', abort)
+        resolve(value)
+      }
+      flight = {
+        from: arrival,
+        to,
+        start: performance.now(),
+        duration: reverse ? 440 : 380,
+        done,
+      }
+      options.signal?.addEventListener('abort', abort, { once: true })
+      invalidate()
+    })
+  }
+  function scheduleMeteor() {
+    clearTimeout(meteorTimer)
+    meteorTimer = 0
+    if (!active || document.hidden || motion.matches || disposed) return
+    meteorTimer = setTimeout(
+      () => {
+        if (!active || document.hidden || motion.matches || disposed) return
+        meteorStart = performance.now()
+        meteorNumber++
+        invalidate()
+      },
+      13500 + 3700 * (meteorNumber % 3),
+    )
+  }
+  function animateMeteor(time) {
+    if (!meteorStart) return
+    const t = (time - meteorStart) / 640
+    if (t >= 1 || motion.matches) {
+      meteor.visible = false
+      meteorStart = 0
+      scheduleMeteor()
+      return
+    }
+    const direction = meteorNumber % 2 ? 1 : -1
+    const x = direction * (0.76 - 0.62 * t),
+      y = 0.41 - 0.34 * t,
+      z = 1.3
+    const tail = 0.124 * Math.sin(Math.PI * Math.max(0, t))
+    streak.set([x + direction * tail, y + tail * 0.55, z - 0.024, x, y, z])
+    streakPosition.needsUpdate = true
+    meteorMaterial.opacity = Math.sin(Math.PI * clamp(t, 0, 1)) * 0.83
+    meteor.visible = true
   }
   listen(
     canvas,
@@ -361,29 +524,96 @@ export function mountGalaxy(
     { passive: false },
   )
   listen(canvas, 'pointermove', (e) => {
+    if (!active || flight) return
+    if (drag && e.pointerId === drag.id) {
+      const dx = e.clientX - drag.x,
+        dy = e.clientY - drag.y
+      if (Math.hypot(dx, dy) > 4 || drag.moved) {
+        drag.moved = true
+        suppressClick = true
+        target = drag.angle + dx * 0.25
+        tiltTarget = clamp(drag.tilt + dy * 0.24, 8, 156)
+        canvas.style.cursor = 'grabbing'
+        invalidate()
+      }
+      return
+    }
+    if (!motion.matches) {
+      const bounds = canvas.getBoundingClientRect()
+      wantedX = clamp((2 * (e.clientX - bounds.left)) / width - 1, -1, 1)
+      wantedY = clamp((2 * (e.clientY - bounds.top)) / height - 1, -1, 1)
+      invalidate()
+    }
     const next = hit(e)
     if (next !== hover) {
       hover = next
-      canvas.style.cursor = next !== NONE ? 'pointer' : 'default'
+      canvas.style.cursor = next !== NONE ? 'pointer' : 'grab'
       invalidate()
     }
   })
   listen(canvas, 'pointerleave', () => {
+    if (drag) return
+    wantedX = wantedY = 0
+    invalidate()
     if (hover !== NONE) {
       hover = NONE
       invalidate()
     }
   })
-  listen(canvas, 'click', (e) => choose(hit(e)))
+  listen(canvas, 'pointerdown', (e) => {
+    if (!active || e.button !== 0) return
+    if (flight) cancelTransition()
+    suppressClick = false
+    drag = {
+      id: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      angle: target,
+      tilt: tiltTarget,
+      moved: false,
+    }
+    canvas.setPointerCapture(e.pointerId)
+  })
+  const release = (e) => {
+    if (!drag || drag.id !== e.pointerId) return
+    drag = null
+    if (canvas.hasPointerCapture(e.pointerId))
+      canvas.releasePointerCapture(e.pointerId)
+    canvas.style.cursor = 'grab'
+  }
+  listen(canvas, 'pointerup', release)
+  listen(canvas, 'pointercancel', release)
+  listen(canvas, 'lostpointercapture', (e) => {
+    if (drag?.id === e.pointerId) {
+      drag = null
+      canvas.style.cursor = 'grab'
+    }
+  })
+  listen(canvas, 'click', (e) => {
+    if (!suppressClick) choose(hit(e))
+    suppressClick = false
+  })
   accessibility(root, articles, choose, (id) => {
     focus = id
     invalidate()
   })
   listen(document, 'visibilitychange', () => {
     if (document.hidden) {
+      if (flight) cancelTransition()
+      clearTimeout(meteorTimer)
+      meteorStart = 0
+      meteor.visible = false
       cancelAnimationFrame(frame)
       frame = lastFrame = 0
-    } else invalidate()
+    } else {
+      scheduleMeteor()
+      invalidate()
+    }
+  })
+  listen(motion, 'change', () => {
+    wantedX = wantedY = 0
+    scheduleMeteor()
+    invalidate()
   })
   listen(canvas, 'webglcontextlost', (e) => {
     e.preventDefault()
@@ -399,17 +629,31 @@ export function mountGalaxy(
   observer.observe(container)
   resize()
   render()
+  scheduleMeteor()
   return {
     rotate,
     getAngle: () => angle,
+    getView: () => ({ angle, tilt: orbitTilt }),
+    approach: (id, options) => travel(id, false, options),
+    returnFrom: (id, options) => travel(id, true, options),
+    cancelTransition,
     reset() {
       target = Math.round(angle / 360) * 360
+      tiltTarget = 68
+      wantedX = wantedY = 0
       invalidate()
     },
     setActive(v) {
       active = Boolean(v)
-      if (active) invalidate()
-      else {
+      if (active) {
+        scheduleMeteor()
+        invalidate()
+      } else {
+        if (flight) cancelTransition()
+        clearTimeout(meteorTimer)
+        meteorStart = 0
+        meteor.visible = false
+        drag = null
         cancelAnimationFrame(frame)
         frame = lastFrame = 0
         target = angle
@@ -417,6 +661,8 @@ export function mountGalaxy(
     },
     destroy() {
       disposed = true
+      cancelTransition()
+      clearTimeout(meteorTimer)
       controller.abort()
       observer.disconnect()
       cancelAnimationFrame(frame)
@@ -425,6 +671,8 @@ export function mountGalaxy(
         label.sprite.material.dispose()
       }
       model.dispose()
+      meteorGeometry.dispose()
+      meteorMaterial.dispose()
       hdr?.dispose()
       screenMesh.geometry.dispose()
       screenMesh.material.dispose()

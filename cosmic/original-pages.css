@@ -1,0 +1,12 @@
+/*
+ * The original theme provider removes data-starlog-theme for its default
+ * palette. Named palettes and the user's gradient stay in its control.
+ */
+:root:not([data-starlog-theme]) {
+  --theme-surface-light: #fafbfd;
+  --theme-surface-dark: #0c1018;
+  --theme-glow-primary-light: rgba(105, 143, 205, 0.16);
+  --theme-glow-secondary-light: rgba(186, 157, 125, 0.1);
+  --theme-glow-primary-dark: rgba(79, 112, 173, 0.16);
+  --theme-glow-secondary-dark: rgba(172, 134, 95, 0.1);
+}

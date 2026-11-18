@@ -1,7 +1,12 @@
 import { Suspense, lazy } from 'react'
-import { Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { Layout } from './components/Layout'
-import Home from './pages/Home'
+const GalaxyHome = lazy(() => import('../cosmic/GalaxyHome'))
+
+function ArticleAlias() {
+  const { slug = '' } = useParams()
+  return <Navigate replace to={'/posts/' + encodeURIComponent(slug)} />
+}
 
 const PostPage = lazy(() => import('./pages/PostPage'))
 const Archive = lazy(() => import('./pages/Archive'))
@@ -28,8 +33,9 @@ export default function App() {
   return (
     <Suspense fallback={<Loading />}>
       <Routes>
+        <Route index element={<GalaxyHome />} />
+        <Route path="post/:slug" element={<ArticleAlias />} />
         <Route element={<Layout />}>
-          <Route index element={<Home />} />
           <Route path="posts/:slug" element={<PostPage />} />
           <Route path="archive" element={<Archive />} />
           <Route path="tags" element={<TagsPage />} />

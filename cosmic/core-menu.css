@@ -1,0 +1,210 @@
+.star-core-menu {
+  position: fixed;
+  inset: 0;
+  width: min(540px, 90vw);
+  margin: auto;
+  max-height: 90dvh;
+  overflow: visible;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #e8ebef;
+}
+.star-core-menu::backdrop {
+  background: rgb(3 6 12 / 62%);
+}
+.star-core-menu[open] {
+  animation: core-arrival 200ms cubic-bezier(0.2, 0.72, 0.3, 1) both;
+}
+.star-core-menu[open]::backdrop {
+  animation: core-darken 180ms ease-out both;
+}
+.star-core-menu[data-leaving] {
+  animation: core-departure 135ms ease-in both;
+  pointer-events: none;
+}
+.star-core-menu[data-leaving]::backdrop {
+  animation: core-darken 135ms ease-in reverse both;
+}
+.core-menu-shell {
+  margin: 0;
+  border: 1px solid rgb(188 205 228 / 25%);
+  border-radius: 14px;
+  background:
+    radial-gradient(ellipse at 5% 0%, rgb(60 85 120 / 27%), transparent 59%),
+    linear-gradient(125deg, #151d2a, #111620 60%, #181b24);
+  box-shadow:
+    0 26px 95px #0009,
+    inset 0 1px rgb(221 231 255 / 7%);
+}
+.core-menu-header,
+.core-menu-footer,
+.core-search,
+.core-destinations > button,
+.core-workspace,
+.core-workspace button {
+  display: flex;
+  align-items: center;
+}
+.core-menu-header {
+  padding: 20px 22px 15px;
+  gap: 8px;
+}
+.core-insignia {
+  width: 41px;
+  height: 41px;
+  display: grid;
+  place-items: center;
+  color: #efd4a6;
+  border: 1px solid rgb(228 196 146 / 35%);
+  border-radius: 50%;
+}
+.core-menu-header h2 {
+  flex: 1;
+  margin: 0 9px;
+  font-size: 23px;
+  font-weight: 580;
+  letter-spacing: 0.04em;
+  color: #f1f1ed;
+}
+.core-round,
+.core-theme > .relative > button {
+  width: 33px;
+  height: 33px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  color: #bcc5d0;
+  background: transparent;
+}
+.core-round svg,
+.core-workspace svg,
+.core-menu-footer svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.55;
+}
+.core-close {
+  margin-left: 2px;
+}
+.core-menu-content {
+  padding: 0 23px 18px;
+}
+.core-search {
+  width: 100%;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid #454b57;
+  border-radius: 5px;
+  background: rgb(4 9 17 / 38%);
+  color: #c8d0d9;
+  text-align: left;
+  font-size: 13px;
+}
+.core-search svg {
+  color: #d2b583;
+}
+.core-search kbd {
+  margin-left: auto;
+  font: 11px/1.2 var(--font-mono, monospace);
+  color: #98a4b2;
+}
+.core-destinations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px 18px;
+  margin: 13px 0 16px;
+}
+.core-destinations > button {
+  gap: 11px;
+  padding: 13px 3px;
+  color: #e2e6eb;
+  border: 0;
+  border-bottom: 1px solid rgb(154 177 207 / 15%);
+  text-align: left;
+  font-size: 14px;
+}
+.core-destinations > button > svg:first-child {
+  color: #c6b08e;
+}
+.core-destinations > button > svg:last-child {
+  margin-left: auto;
+  color: #99a9bb;
+}
+.core-workspace {
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.core-workspace button {
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid #3c4654;
+  border-radius: 5px;
+  background: rgb(151 174 208 / 4%);
+  color: #cbd2dd;
+  font-size: 12px;
+}
+.core-menu-footer {
+  justify-content: space-between;
+  gap: 15px;
+  padding: 12px 23px;
+  border-top: 1px solid rgb(154 177 207 / 15%);
+}
+.core-menu-footer button,
+.core-menu-footer > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #aeb9c8;
+}
+.core-menu-footer > span.core-account {
+  margin-left: auto;
+}
+.core-menu-shell
+  :is(
+    .core-round,
+    .core-search,
+    .core-workspace button,
+    .core-destinations button,
+    .core-menu-footer button
+  ):hover {
+  color: #f5debc;
+  background-color: rgb(157 185 225 / 8%);
+}
+.core-menu-shell :focus-visible {
+  outline: 2px solid #d6b991;
+  outline-offset: 3px;
+}
+@keyframes core-arrival {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes core-departure {
+  to {
+    opacity: 0;
+    transform: translateY(3px) scale(0.99);
+  }
+}
+@keyframes core-darken {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .star-core-menu[open],
+  .star-core-menu[open]::backdrop {
+    animation: none;
+  }
+}

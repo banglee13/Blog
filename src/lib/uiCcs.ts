@@ -1433,11 +1433,11 @@ export function resolveUiCcsHoverTarget(
 }
 
 /** 静态 HTML / SVG 渲染（用于 MPE 静态兼容模式）。 */
-export function renderStaticUiCcsSvg(source: string, camera?: UiCcsViewport): string {
+export function renderStaticUiCcsSvg(source: string): string {
   const { items } = parseUiCcs(source)
   const width = UI_CCS_VIEW_WIDTH
   const height = UI_CCS_VIEW_HEIGHT
-  const viewport = camera ?? computeInitialUiCcsViewport(items, width, height)
+  const viewport = computeInitialUiCcsViewport(items, width, height)
   const { major, minor } = chooseGridStep(viewport.unitsPerPx)
   const halfW = (width / 2) * viewport.unitsPerPx
   const halfH = (height / 2) * viewport.unitsPerPx

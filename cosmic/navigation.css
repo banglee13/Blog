@@ -1,0 +1,32 @@
+.galaxy-viewport {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: #04060b;
+  isolation: isolate;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .galaxy-viewport {
+    animation: galaxy-arrival 360ms ease-out both;
+  }
+  #root > .relative.flex.min-h-screen {
+    animation: article-arrival 300ms ease-out;
+  }
+}
+@keyframes galaxy-arrival {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes article-arrival {
+  from {
+    opacity: 0.2;
+  }
+  to {
+    opacity: 1;
+  }
+}
