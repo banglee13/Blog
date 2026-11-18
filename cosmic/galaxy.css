@@ -1,0 +1,38 @@
+.gx-world,
+.gx-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.gx-canvas {
+  display: block;
+  touch-action: pan-y;
+}
+.gx-access {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.gx-unavailable {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 18px;
+  color: #c1c4cb;
+  font:
+    15px/1.6 'Microsoft YaHei',
+    sans-serif;
+}
+.gx-unavailable button {
+  color: inherit;
+  border: 1px solid #656975;
+  border-radius: 4px;
+  padding: 7px 16px;
+}

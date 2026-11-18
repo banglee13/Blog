@@ -18,6 +18,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { htmlAssetRefs } from './vite-plugin-single-html.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = join(root, 'dist-offline')
@@ -65,7 +66,7 @@ if (bytes < MIN_BYTES) {
 
 /* ----------------------------- 3) 相对引用是否清干净 ---------------------------- */
 
-const refs = [...html.matchAll(/(?:src|href)\s*=\s*["']([^"'#]+)["']/gi)].map((match) => match[1])
+const refs = htmlAssetRefs(html)
 const broken = refs.filter(
   (url) =>
     !url.startsWith('data:') &&

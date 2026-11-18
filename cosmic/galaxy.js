@@ -1,0 +1,436 @@
+import * as THREE from './vendor/three.module.min.js'
+import { makeGalaxyModel } from './galaxy-model.js'
+
+const RAD = Math.PI / 180
+const CORE = -1
+const NONE = -2
+const ANGLE_LIMIT = 36
+const DISTANCE = 4
+const LABEL_FONT = '13px "Segoe UI","Microsoft YaHei",sans-serif'
+const clamp = THREE.MathUtils.clamp
+const preferred = [
+  'oi-dp-skill-1',
+  'katex-cheatsheet',
+  'oi-computerroom-setup-list',
+  'dark-mode-design-notes',
+  'typescript-utility-types',
+  'hello-starlog',
+  'is-your-ai-bad',
+  'my-problem-longest-point',
+]
+const namePriority = (a) => {
+  const i = preferred.indexOf(a.id)
+  return i === -1 ? 100 : i
+}
+
+function makeTitle(text) {
+  const surface = document.createElement('canvas')
+  const context = surface.getContext('2d')
+  context.font = LABEL_FONT
+  const maxWidth = Math.min(238, Math.ceil(context.measureText(text).width))
+  const words = Array.from(text)
+  if (context.measureText(text).width > maxWidth) {
+    while (
+      words.length &&
+      context.measureText(words.join('') + '…').width > maxWidth
+    )
+      words.pop()
+    text = words.join('') + '…'
+  }
+  const width = maxWidth + 8,
+    height = 26
+  surface.width = width * 2
+  surface.height = height * 2
+  context.scale(2, 2)
+  context.font = LABEL_FONT
+  context.textBaseline = 'middle'
+  context.fillStyle = '#c6c8cd'
+  context.shadowColor = '#030508'
+  context.shadowBlur = 4
+  context.fillText(text, 4, height / 2 + 0.3)
+  const texture = new THREE.CanvasTexture(surface)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.generateMipmaps = false
+  texture.minFilter = THREE.LinearFilter
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false,
+  })
+  const sprite = new THREE.Sprite(material)
+  sprite.center.set(0, 0.5)
+  sprite.scale.set(width, height, 1)
+  return { sprite, width, height, rect: null }
+}
+
+function accessibility(root, articles, onSelect, onFocus) {
+  const group = document.createElement('nav')
+  group.className = 'gx-access'
+  group.setAttribute('aria-label', '星图导航')
+  const add = (id, title) => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.textContent = title
+    b.dataset.star = String(id)
+    b.onclick = () => onSelect(id)
+    b.onfocus = () => onFocus(id)
+    b.onblur = () => onFocus(NONE)
+    group.append(b)
+  }
+  add(CORE, '打开星核导航')
+  articles.forEach((a, i) => add(i, '阅读：' + a.title))
+  root.append(group)
+}
+
+export function mountGalaxy(
+  container,
+  { articles = [], onArticle, onCore, onRotate, initialAngle = 0 } = {},
+) {
+  const root = document.createElement('div')
+  root.className = 'gx-world'
+  container.append(root)
+  const controller = new AbortController()
+  const listen = (node, event, handler, options = {}) =>
+    node.addEventListener(event, handler, {
+      ...options,
+      signal: controller.signal,
+    })
+  const motion = matchMedia('(prefers-reduced-motion: reduce)')
+  let renderer,
+    warning,
+    model,
+    frame = 0,
+    disposed = false,
+    active = true,
+    lastFrame = 0
+  let angle = Number(initialAngle) || 0,
+    target = angle,
+    width = 0,
+    height = 0,
+    hover = NONE,
+    focus = NONE
+  let renderState = 'webgl',
+    labels = [],
+    projected = [],
+    order = []
+  function choose(id) {
+    if (!active) return
+    if (id === CORE) onCore?.()
+    else if (id >= 0) onArticle?.(articles[id])
+  }
+  function displayUnsupported() {
+    renderState = 'unavailable'
+    root.dataset.renderer = renderState
+    if (warning) return
+    warning = document.createElement('div')
+    warning.className = 'gx-unavailable'
+    const message = document.createElement('p')
+    message.textContent = '当前浏览器无法显示三维星图。'
+    const button = document.createElement('button')
+    button.textContent = '打开导航'
+    button.type = 'button'
+    button.onclick = () => choose(CORE)
+    warning.append(message, button)
+    root.append(warning)
+  }
+  try {
+    renderer = new THREE.WebGLRenderer({
+      alpha: false,
+      antialias: false,
+      powerPreference: 'low-power',
+      stencil: false,
+      depth: false,
+    })
+  } catch {
+    displayUnsupported()
+  }
+  if (!renderer) {
+    return {
+      destroy() {
+        disposed = true
+        controller.abort()
+        root.remove()
+      },
+      rotate() {},
+      reset() {},
+      getAngle: () => angle,
+      setActive: (v) => {
+        active = v
+      },
+    }
+  }
+  root.dataset.renderer = renderState
+  const canvas = renderer.domElement
+  canvas.className = 'gx-canvas'
+  canvas.setAttribute('role', 'img')
+  canvas.setAttribute('aria-label', '可通过滚轮旋转的三维星系')
+  root.append(canvas)
+  renderer.setClearColor(0x04060b)
+  renderer.autoClear = false
+  const scene = new THREE.Scene(),
+    overlay = new THREE.Scene(),
+    camera = new THREE.PerspectiveCamera(32, 1, 0.1, 20)
+  // Preserve the nucleus and knots in floating point before compressing high
+  // radiance into the display range. The fullscreen pass contains no imagery.
+  const hdr = renderer.extensions.has('EXT_color_buffer_float')
+    ? new THREE.WebGLRenderTarget(1, 1, {
+        type: THREE.HalfFloatType,
+        depthBuffer: false,
+        stencilBuffer: false,
+      })
+    : null
+  const exposureScene = new THREE.Scene(),
+    screenCamera = new THREE.Camera()
+  const screenMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    new THREE.ShaderMaterial({
+      uniforms: { field: { value: hdr?.texture } },
+      vertexShader:
+        'varying vec2 coords; void main(){coords=uv;gl_Position=vec4(position.xy,0.,1.);}',
+      fragmentShader: `varying vec2 coords; uniform sampler2D field; void main(){
+      vec3 c=texture2D(field,coords).rgb;
+      c=1.-exp(-c*1.25);
+      gl_FragColor=vec4(c,1.);
+    }`,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  )
+  exposureScene.add(screenMesh)
+  const textCamera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 4)
+  textCamera.position.z = 1
+  camera.position.set(0, 0, DISTANCE)
+  const bank = new THREE.Group(),
+    tilt = new THREE.Group()
+  model = makeGalaxyModel(articles)
+  scene.add(bank, model.field)
+  bank.add(tilt)
+  tilt.add(model.body)
+  bank.rotation.z = 14 * RAD
+  labels = articles.map((a) => makeTitle(a.title))
+  for (const label of labels) overlay.add(label.sprite)
+  projected = model.anchors.map(() => ({ x: 0, y: 0 }))
+  order = model.anchors
+    .map((a) => a.id)
+    .sort((a, b) => namePriority(articles[a]) - namePriority(articles[b]))
+  const vector = new THREE.Vector3()
+  const coreScreen = { x: 0, y: 0 }
+  function screenPoint(pos, out) {
+    vector.copy(pos).applyMatrix4(model.body.matrixWorld).project(camera)
+    out.x = (vector.x + 1) * 0.5 * width
+    out.y = (1 - vector.y) * 0.5 * height
+  }
+  const origin = new THREE.Vector3()
+  function positionTitles() {
+    scene.updateMatrixWorld()
+    camera.updateMatrixWorld()
+    screenPoint(origin, coreScreen)
+    for (const a of model.anchors) screenPoint(a.point, projected[a.id])
+    const chosen = [],
+      id = focus !== NONE ? focus : hover
+    const priority = id >= 0 ? [id, ...order.filter((i) => i !== id)] : order
+    let count = 0
+    for (const i of priority) {
+      const label = labels[i],
+        sprite = label.sprite,
+        p = projected[i],
+        emphasis = i === id
+      label.rect = null
+      sprite.visible = false
+      if (count >= 8 && !emphasis) continue
+      if (p.x < 5 || p.y < 4 || p.x > width - 5 || p.y > height - 4) continue
+      const left =
+        p.x + label.width + 18 > width ? p.x - label.width - 9 : p.x + 9
+      const top = p.y - 20
+      const rect = { left, top, right: left + label.width, bottom: top + 25 }
+      if (
+        !emphasis &&
+        (Math.hypot(p.x - coreScreen.x, p.y - coreScreen.y) < 58 ||
+          chosen.some(
+            (r) =>
+              rect.left < r.right + 5 &&
+              rect.right > r.left - 5 &&
+              rect.top < r.bottom + 4 &&
+              rect.bottom > r.top - 4,
+          ))
+      )
+        continue
+      chosen.push(rect)
+      count++
+      label.rect = rect
+      sprite.position.set(left, height - top - label.height / 2, 0)
+      sprite.material.opacity = emphasis ? 1 : 0.83
+      sprite.visible = true
+    }
+  }
+  function render() {
+    if (disposed || !width || !height || renderState !== 'webgl') return
+    model.body.rotation.z = angle * RAD
+    tilt.rotation.x = (52 + 8 * Math.sin(angle * RAD * 0.5)) * RAD
+    model.field.rotation.y = Math.sin(angle * RAD) * 0.016
+    positionTitles()
+    renderer.setRenderTarget(hdr)
+    renderer.clear()
+    renderer.render(scene, camera)
+    if (hdr) {
+      renderer.setRenderTarget(null)
+      renderer.render(exposureScene, screenCamera)
+    }
+    renderer.render(overlay, textCamera)
+    onRotate?.(angle)
+  }
+  function tick(time) {
+    frame = 0
+    if (disposed || !active || document.hidden || renderState !== 'webgl')
+      return
+    const dt = lastFrame ? Math.min(64, time - lastFrame) : 16.7
+    lastFrame = time
+    angle += (target - angle) * (1 - Math.exp(-dt / 68))
+    if (Math.abs(target - angle) < 0.035 || motion.matches) angle = target
+    render()
+    if (target !== angle) frame = requestAnimationFrame(tick)
+    else lastFrame = 0
+  }
+  function invalidate() {
+    if (!disposed && active && !document.hidden && !frame)
+      frame = requestAnimationFrame(tick)
+  }
+  function resize() {
+    width = container.clientWidth
+    height = container.clientHeight
+    if (!width || !height) return
+    const ratio = Math.min(
+      devicePixelRatio || 1,
+      1.3,
+      Math.sqrt(2250000 / (width * height)),
+    )
+    renderer.setPixelRatio(ratio)
+    renderer.setSize(width, height, false)
+    hdr?.setSize(Math.round(width * ratio), Math.round(height * ratio))
+    const radius = Math.min(width * 0.402, height * 0.67)
+    camera.aspect = width / height
+    camera.fov = (2 * Math.atan(height / (2 * radius * DISTANCE))) / RAD
+    camera.updateProjectionMatrix()
+    textCamera.right = width
+    textCamera.top = height
+    textCamera.updateProjectionMatrix()
+    model.setScale(radius * DISTANCE * ratio, ratio)
+    invalidate()
+  }
+  function hit(e) {
+    const bounds = canvas.getBoundingClientRect(),
+      x = e.clientX - bounds.left,
+      y = e.clientY - bounds.top
+    if (Math.hypot(x - coreScreen.x, y - coreScreen.y) < 24) return CORE
+    let item = NONE,
+      distance = 16
+    for (let i = 0; i < projected.length; i++) {
+      const p = projected[i],
+        r = Math.hypot(x - p.x, y - p.y)
+      if (r < distance) {
+        distance = r
+        item = i
+      }
+    }
+    if (item !== NONE) return item
+    for (let i = 0; i < labels.length; i++) {
+      const r = labels[i].rect
+      if (r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)
+        return i
+    }
+    return NONE
+  }
+  function rotate(delta) {
+    if (!active || !Number.isFinite(delta)) return
+    target += delta
+    invalidate()
+  }
+  listen(
+    canvas,
+    'wheel',
+    (e) => {
+      if (!active || e.ctrlKey) return
+      e.preventDefault()
+      const amount =
+        Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+      const factor = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? height : 1
+      rotate(clamp(amount * factor * 0.12, -ANGLE_LIMIT, ANGLE_LIMIT))
+    },
+    { passive: false },
+  )
+  listen(canvas, 'pointermove', (e) => {
+    const next = hit(e)
+    if (next !== hover) {
+      hover = next
+      canvas.style.cursor = next !== NONE ? 'pointer' : 'default'
+      invalidate()
+    }
+  })
+  listen(canvas, 'pointerleave', () => {
+    if (hover !== NONE) {
+      hover = NONE
+      invalidate()
+    }
+  })
+  listen(canvas, 'click', (e) => choose(hit(e)))
+  accessibility(root, articles, choose, (id) => {
+    focus = id
+    invalidate()
+  })
+  listen(document, 'visibilitychange', () => {
+    if (document.hidden) {
+      cancelAnimationFrame(frame)
+      frame = lastFrame = 0
+    } else invalidate()
+  })
+  listen(canvas, 'webglcontextlost', (e) => {
+    e.preventDefault()
+    displayUnsupported()
+  })
+  listen(canvas, 'webglcontextrestored', () => {
+    renderState = root.dataset.renderer = 'webgl'
+    warning?.remove()
+    warning = null
+    invalidate()
+  })
+  const observer = new ResizeObserver(resize)
+  observer.observe(container)
+  resize()
+  render()
+  return {
+    rotate,
+    getAngle: () => angle,
+    reset() {
+      target = Math.round(angle / 360) * 360
+      invalidate()
+    },
+    setActive(v) {
+      active = Boolean(v)
+      if (active) invalidate()
+      else {
+        cancelAnimationFrame(frame)
+        frame = lastFrame = 0
+        target = angle
+      }
+    },
+    destroy() {
+      disposed = true
+      controller.abort()
+      observer.disconnect()
+      cancelAnimationFrame(frame)
+      for (const label of labels) {
+        label.sprite.material.map.dispose()
+        label.sprite.material.dispose()
+      }
+      model.dispose()
+      hdr?.dispose()
+      screenMesh.geometry.dispose()
+      screenMesh.material.dispose()
+      renderer.dispose()
+      renderer.forceContextLoss()
+      root.remove()
+    },
+  }
+}

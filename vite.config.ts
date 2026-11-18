@@ -3,6 +3,14 @@ import react from '@vitejs/plugin-react'
 import fs from 'node:fs'
 import path from 'node:path'
 
+// Match the two same-origin device-flow routes provided by Cloudflare Pages.
+// Only these specific GitHub endpoints are proxied by the desktop local server.
+const loginProxy = Object.fromEntries(
+  ['/login/device/code', '/login/oauth/access_token'].map(endpoint => [
+    '^' + endpoint + '$', { target: 'https://github.com', changeOrigin: true },
+  ]),
+)
+
 /**
  * 部署说明：
  * - GitHub Pages 项目主页（https://<user>.github.io/<repo>/）：BASE_PATH 为 "/<repo>/"，本仓库默认 "/Blog/"
@@ -36,12 +44,14 @@ export default defineConfig(({ mode, command }) => {
       },
     ],
     server: {
+      proxy: loginProxy,
       host: '0.0.0.0',
       port: 5173,
       strictPort: false,
       allowedHosts: true,
     },
     preview: {
+      proxy: loginProxy,
       host: '0.0.0.0',
       allowedHosts: true,
     },

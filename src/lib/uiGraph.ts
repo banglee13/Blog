@@ -644,11 +644,11 @@ export function updateUiGraphBlockPositions(
 }
 
 /** 静态 SVG 渲染（用于 VS Code MPE 静态兼容模式：纯图论画布，不含直角坐标系网格或坐标轴）。 */
-export function renderStaticUiGraphSvg(headerRest: string, sourceBody: string): string {
+export function renderStaticUiGraphSvg(headerRest: string, sourceBody: string, camera?: UiCcsViewport): string {
   const { directed, nodes, edges } = parseUiGraph(headerRest, sourceBody)
   const width = UI_CCS_VIEW_WIDTH
   const height = UI_CCS_VIEW_HEIGHT
-  const viewport = computeInitialUiGraphViewport(nodes, width, height)
+  const viewport = camera ?? computeInitialUiGraphViewport(nodes, width, height)
   const toSX = (wx: number) => width / 2 + (wx - viewport.centerX) / viewport.unitsPerPx
   const toSY = (wy: number) => height / 2 - (wy - viewport.centerY) / viewport.unitsPerPx
   const fmt = (n: number) => String(Number(n.toFixed(2)))
