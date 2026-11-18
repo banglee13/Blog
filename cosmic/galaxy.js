@@ -8,6 +8,7 @@ const NONE = -2
 const MIN_ZOOM = 0.55
 const MAX_ZOOM = 2.65
 const DISTANCE = 4
+const IDLE_DELAY = 4500
 const LABEL_FONT = '13px "Segoe UI","Microsoft YaHei",sans-serif'
 // Once per document, including remounts due to route changes and StrictMode.
 let introduced = false
@@ -122,6 +123,10 @@ export function mountGalaxy(
     suppressClick = false
   let introStart = null,
     entryWeight = 0
+  let lastActivity = performance.now(),
+    idleTimer = 0,
+    idleTime = 0,
+    idleWeight = 0
   let flight = null,
     arrival = 0,
     flightTarget = null,
@@ -324,6 +329,15 @@ export function mountGalaxy(
       DISTANCE - 0.16 * Math.sin(bearing),
     )
     aim.set(pointerX * 0.054, -pointerY * 0.039, 0)
+    const drift = idleWeight * idleWeight * (3 - 2 * idleWeight)
+    if (drift) {
+      const t = idleTime
+      camera.position.x += drift * 0.19 * Math.sin(t * 0.37)
+      camera.position.y += drift * 0.12 * Math.sin(t * 0.29 + 0.6)
+      camera.position.z += drift * 0.22 * Math.sin(t * 0.42 + 1)
+      tilt.rotation.x += drift * 3.2 * RAD * Math.sin(t * 0.31)
+    }
+    model.setShimmer(idleTime, drift)
     // The observer sweeps past nearby stars while the distant star field moves
     // only slightly. All perspective, parallax and occlusion remain in camera.
     if (entryWeight > 0) {
@@ -395,6 +409,22 @@ export function mountGalaxy(
         finished.done(true)
       }
     }
+    const idling =
+      canIdle() &&
+      !drag &&
+      !flight &&
+      !arrival &&
+      introStart === null &&
+      performance.now() - lastActivity >= IDLE_DELAY
+    // Keep the scene still under a held pointer until it becomes a drag.
+    const canEaseOut = !drag || drag.moved
+    if (idling) {
+      idleTime += dt / 1000
+      idleWeight = Math.min(1, idleWeight + dt / 1800)
+    } else if (canEaseOut) {
+      idleWeight = Math.max(0, idleWeight - dt / 420)
+      if (!idleWeight) idleTime = 0
+    }
     animateMeteor(time)
     render()
     if (
@@ -405,7 +435,9 @@ export function mountGalaxy(
       pointerY !== wantedY ||
       introStart !== null ||
       flight ||
-      meteorStart
+      meteorStart ||
+      idling ||
+      (idleWeight > 0 && canEaseOut)
     )
       frame = requestAnimationFrame(tick)
     else lastFrame = 0
@@ -413,6 +445,33 @@ export function mountGalaxy(
   function invalidate() {
     if (!disposed && active && !document.hidden && !frame)
       frame = requestAnimationFrame(tick)
+  }
+  function canIdle() {
+    return (
+      active &&
+      !disposed &&
+      !document.hidden &&
+      !motion.matches &&
+      renderState === 'webgl'
+    )
+  }
+  function scheduleIdle() {
+    if (idleTimer || !canIdle()) return
+    idleTimer = setTimeout(() => {
+      idleTimer = 0
+      if (!canIdle()) return
+      if (performance.now() - lastActivity < IDLE_DELAY) scheduleIdle()
+      else invalidate()
+    }, Math.max(1, IDLE_DELAY - (performance.now() - lastActivity)))
+  }
+  function noteActivity() {
+    lastActivity = performance.now()
+    scheduleIdle()
+    if (idleWeight) invalidate()
+  }
+  function stopIdle() {
+    clearTimeout(idleTimer)
+    idleTimer = idleWeight = idleTime = 0
   }
   function resize() {
     width = container.clientWidth
@@ -463,6 +522,7 @@ export function mountGalaxy(
   }
   function rotate(delta) {
     if (!active || !Number.isFinite(delta)) return
+    noteActivity()
     stopIntroduction()
     if (flight) cancelTransition()
     target += delta
@@ -483,6 +543,7 @@ export function mountGalaxy(
     if (disposed || !active || options.signal?.aborted)
       return Promise.resolve(false)
     if (renderState !== 'webgl') return Promise.resolve(true)
+    noteActivity()
     cancelTransition()
     const anchor =
       id === 'core'
@@ -557,6 +618,7 @@ export function mountGalaxy(
   }
   function magnify(factor) {
     if (!active || !Number.isFinite(factor) || factor <= 0) return
+    noteActivity()
     stopIntroduction()
     if (flight) cancelTransition()
     zoomTarget = clamp(zoomTarget * factor, MIN_ZOOM, MAX_ZOOM)
@@ -575,6 +637,7 @@ export function mountGalaxy(
   )
   listen(canvas, 'pointermove', (e) => {
     if (!active || flight) return
+    noteActivity()
     if (e.isTrusted) stopIntroduction()
     if (drag && e.pointerId === drag.id) {
       const dx = e.clientX - drag.x,
@@ -604,6 +667,7 @@ export function mountGalaxy(
   })
   listen(canvas, 'pointerleave', () => {
     if (drag) return
+    noteActivity()
     wantedX = wantedY = 0
     invalidate()
     if (hover !== NONE) {
@@ -613,6 +677,7 @@ export function mountGalaxy(
   })
   listen(canvas, 'pointerdown', (e) => {
     if (!active || e.button !== 0) return
+    noteActivity()
     stopIntroduction()
     if (flight) cancelTransition()
     suppressClick = false
@@ -629,6 +694,7 @@ export function mountGalaxy(
   const release = (e) => {
     if (!drag || drag.id !== e.pointerId) return
     drag = null
+    noteActivity()
     if (canvas.hasPointerCapture(e.pointerId))
       canvas.releasePointerCapture(e.pointerId)
     canvas.style.cursor = 'grab'
@@ -638,6 +704,7 @@ export function mountGalaxy(
   listen(canvas, 'lostpointercapture', (e) => {
     if (drag?.id === e.pointerId) {
       drag = null
+      noteActivity()
       canvas.style.cursor = 'grab'
     }
   })
@@ -647,11 +714,13 @@ export function mountGalaxy(
   })
   accessibility(root, articles, choose, (id) => {
     focus = id
+    noteActivity()
     invalidate()
   })
   listen(window, 'keydown', () => stopIntroduction(), { capture: true })
   listen(document, 'visibilitychange', () => {
     if (document.hidden) {
+      stopIdle()
       stopIntroduction()
       if (flight) cancelTransition()
       clearTimeout(meteorTimer)
@@ -660,24 +729,29 @@ export function mountGalaxy(
       cancelAnimationFrame(frame)
       frame = lastFrame = 0
     } else {
+      noteActivity()
       scheduleMeteor()
       invalidate()
     }
   })
   listen(motion, 'change', () => {
     if (motion.matches) stopIntroduction()
+    stopIdle()
+    noteActivity()
     wantedX = wantedY = 0
     scheduleMeteor()
     invalidate()
   })
   listen(canvas, 'webglcontextlost', (e) => {
     e.preventDefault()
+    stopIdle()
     displayUnsupported()
   })
   listen(canvas, 'webglcontextrestored', () => {
     renderState = root.dataset.renderer = 'webgl'
     warning?.remove()
     warning = null
+    noteActivity()
     invalidate()
   })
   const observer = new ResizeObserver(resize)
@@ -689,6 +763,7 @@ export function mountGalaxy(
   introduced = true
   resize()
   render()
+  noteActivity()
   scheduleMeteor()
   return {
     rotate,
@@ -699,6 +774,7 @@ export function mountGalaxy(
     returnFrom: (id, options) => travel(id, true, options),
     cancelTransition,
     reset() {
+      noteActivity()
       target = Math.round(angle / 360) * 360
       tiltTarget = 40
       zoomTarget = 1
@@ -709,9 +785,11 @@ export function mountGalaxy(
       active = Boolean(v)
       if (!active) stopIntroduction()
       if (active) {
+        noteActivity()
         scheduleMeteor()
         invalidate()
       } else {
+        stopIdle()
         if (flight) cancelTransition()
         clearTimeout(meteorTimer)
         meteorStart = 0
@@ -725,6 +803,7 @@ export function mountGalaxy(
     destroy() {
       disposed = true
       cancelTransition()
+      stopIdle()
       clearTimeout(meteorTimer)
       controller.abort()
       observer.disconnect()

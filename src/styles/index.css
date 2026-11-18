@@ -476,6 +476,47 @@
     @apply btn border border-rose-200 text-rose-600 hover:bg-rose-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10;
   }
 
+  .site-layout-switch {
+    @apply grid w-full max-w-xs grid-cols-2 gap-1 rounded-2xl border border-ink-200/80 p-1
+           dark:border-white/15;
+    background-color: #f6f7f9;
+    background-image: linear-gradient(135deg, rgb(var(--brand-500) / 0.07), transparent 72%);
+    box-shadow: inset 0 1px 2px rgb(13 16 23 / 7%);
+  }
+  .dark .site-layout-switch {
+    background-color: #191d2b;
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 28%);
+  }
+  @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    /* The settings card already blurs the page; the track just tints that surface. */
+    .site-layout-switch { background-color: rgb(25 29 43 / 4%); }
+    .dark .site-layout-switch { background-color: rgb(255 255 255 / 5%); }
+  }
+  .site-layout-option {
+    @apply flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-transparent
+           px-1.5 py-2 text-center text-sm font-medium text-ink-700 transition-colors
+           dark:text-ink-200 motion-reduce:transition-none sm:gap-2 sm:px-3;
+  }
+  .site-layout-option svg {
+    @apply shrink-0;
+  }
+  .site-layout-option:hover {
+    @apply bg-white/65 text-ink-900 dark:bg-white/10 dark:text-white;
+  }
+  .site-layout-switch input:checked + .site-layout-option {
+    @apply border-brand-500/35 bg-white/90 text-brand-900 dark:bg-brand-500/15 dark:text-brand-100;
+    box-shadow: inset 0 1px rgb(255 255 255 / 18%), 0 3px 10px rgb(var(--brand-900) / 0.12);
+  }
+  .site-layout-switch input:focus-visible + .site-layout-option {
+    @apply relative z-10 outline outline-2 outline-offset-2 outline-brand-800 dark:outline-white;
+  }
+  .site-layout-check {
+    visibility: hidden;
+  }
+  .site-layout-switch input:checked + .site-layout-option .site-layout-check {
+    visibility: visible;
+  }
+
   .input {
     @apply w-full rounded-xl border border-ink-200 bg-white px-3.5 py-2.5 text-sm text-ink-900 outline-none
            transition placeholder:text-ink-400 focus:border-brand-400 focus:ring-4 focus:ring-brand-500/12

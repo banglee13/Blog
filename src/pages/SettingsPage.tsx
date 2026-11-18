@@ -4,6 +4,7 @@ import {
   ArrowDown,
   Ban,
   ArrowUp,
+  Check,
   CheckCircle2,
   Cloud,
   CloudRain,
@@ -644,22 +645,23 @@ export default function SettingsPage() {
 
       <div className="space-y-5" data-yield-list>
         <Section title="站点外观" icon={PanelsTopLeft}>
-          <div role="radiogroup" aria-label="站点外观" className="inline-grid max-w-full grid-cols-2 gap-1 rounded-lg border border-ink-200 bg-ink-100/60 p-1 dark:border-white/15 dark:bg-white/5">
+          <div role="radiogroup" aria-label="站点外观" className="site-layout-switch">
             {([
               { id: 'classic', label: '经典', Icon: PanelsTopLeft },
               { id: 'galaxy', label: '星系', Icon: Orbit },
             ] as const).map(({ id, label, Icon }) => (
-              <label key={id} className="relative cursor-pointer">
+              <label key={id} className="relative min-w-0 cursor-pointer">
                 <input
-                  className="peer sr-only"
+                  className="sr-only"
                   type="radio"
                   name="site-layout"
                   checked={siteLayout === id}
                   onChange={() => setSiteLayout(id)}
                 />
-                <span className="flex min-h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-transparent px-3 text-sm font-medium text-ink-600 hover:text-ink-900 peer-checked:border-brand-500/35 peer-checked:bg-white peer-checked:text-brand-700 peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-brand-500 dark:text-ink-300 dark:hover:text-white dark:peer-checked:bg-brand-500/15 dark:peer-checked:text-brand-200">
+                <span className="site-layout-option">
                   <Icon size={16} aria-hidden="true" />
                   {label}
+                  <Check size={14} className="site-layout-check" aria-hidden="true" />
                 </span>
               </label>
             ))}

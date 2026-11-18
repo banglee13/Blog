@@ -37,12 +37,20 @@ const POINT_VERTEX = /* glsl */ `
   attribute float diameter;
   uniform float scale;
   uniform float pixelRatio;
+  uniform float shimmerTime;
+  uniform float shimmerWeight;
   varying vec4 tint;
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mv;
     gl_PointSize = clamp(diameter * scale / -mv.z, .75 * pixelRatio, 108.0 * pixelRatio);
     tint = pigment;
+    if (shimmerWeight > 0.0) {
+      // Nearby points have unrelated phases, so whole layers never flash in sync.
+      float phase = dot(position, vec3(127.1, 311.7, 74.7));
+      float rate = 0.9 + 1.4 * fract(phase);
+      tint.a *= 1.0 + shimmerWeight * sin(shimmerTime * rate + phase);
+    }
   }`
 const POINT_FRAGMENT = /* glsl */ `
   varying vec4 tint;
@@ -80,7 +88,12 @@ function population(count, sample, radiant = false) {
   geometry.setAttribute('pigment', new THREE.BufferAttribute(colors, 4, true))
   geometry.setAttribute('diameter', new THREE.BufferAttribute(diameters, 1))
   const material = new THREE.ShaderMaterial({
-    uniforms: { scale: { value: 2000 }, pixelRatio: { value: 1 } },
+    uniforms: {
+      scale: { value: 2000 },
+      pixelRatio: { value: 1 },
+      shimmerTime: { value: 0 },
+      shimmerWeight: { value: 0 },
+    },
     vertexShader: POINT_VERTEX,
     fragmentShader: radiant ? BEACON_FRAGMENT : POINT_FRAGMENT,
     transparent: true,
@@ -422,6 +435,7 @@ export function makeGalaxyModel(articles) {
   )
   foreground.renderOrder = 6
   const all = [...batches, beacons, center, field, foreground]
+  const shimmering = [[field, 0.32], [foreground, 0.42], [knotsStars, 0.22]]
   return {
     body,
     field,
@@ -431,6 +445,12 @@ export function makeGalaxyModel(articles) {
       for (const batch of all) {
         batch.material.uniforms.scale.value = scale
         batch.material.uniforms.pixelRatio.value = ratio
+      }
+    },
+    setShimmer(time, weight) {
+      for (const [batch, strength] of shimmering) {
+        batch.material.uniforms.shimmerTime.value = time
+        batch.material.uniforms.shimmerWeight.value = weight * strength
       }
     },
     dispose() {

@@ -156,6 +156,7 @@ export function CoreMenu({ onClose, onGo, onSearch }: CoreMenuProps) {
             type="button"
             className="core-round"
             aria-label={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+            title={theme === 'dark' ? '浅色模式' : '深色模式'}
             onClick={toggle}
           >
             {theme === 'dark' ? <Sun /> : <Moon />}
@@ -164,6 +165,7 @@ export function CoreMenu({ onClose, onGo, onSearch }: CoreMenuProps) {
             type="button"
             className="core-round core-close"
             aria-label="关闭星核导航"
+            title="关闭"
             onClick={() => dismiss(onClose)}
           >
             <X />
@@ -175,14 +177,15 @@ export function CoreMenu({ onClose, onGo, onSearch }: CoreMenuProps) {
             className="core-search"
             onClick={() => dismiss(onSearch)}
           >
-            <Search size={18} />
+            <Search size={18} aria-hidden="true" />
             <span>搜索文章</span>
-            <kbd>Ctrl / ⌘ K</kbd>
           </button>
           <nav aria-label="博客导航" className="core-destinations">
             {destinations.map(([path, label, Icon]) => (
               <button key={path} type="button" onClick={() => go(path)}>
-                <Icon aria-hidden="true" size={20} strokeWidth={1.5} />
+                <span className="core-destination-icon" aria-hidden="true">
+                  <Icon size={18} />
+                </span>
                 <span>{label}</span>
                 <ChevronRight aria-hidden="true" size={15} />
               </button>
