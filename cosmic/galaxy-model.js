@@ -421,37 +421,11 @@ export function makeGalaxyModel(articles) {
     true,
   )
   foreground.renderOrder = 6
-  // A distant companion fixes the scale of the main disc during parallax.
-  // Both the blue disc and its warm nucleus occupy independent 3-D volumes.
-  const companion = population(4100, (i) => {
-    const nucleus = i < 1000
-    const radius = nucleus
-      ? 0.02 * Math.sqrt(-Math.log(Math.max(0.0001, random())))
-      : 0.135 * Math.sqrt(random())
-    const azimuth = nucleus
-      ? TAU * random()
-      : Math.PI * (i % 2) + radius * 22 + bell() * 0.53
-    const x = radius * Math.cos(azimuth),
-      y = radius * Math.sin(azimuth),
-      z = bell() * (nucleus ? 0.009 : 0.004)
-    const thinY = 0.48 * y + 0.88 * z
-    return [
-      -1.4 + 0.92 * x - 0.39 * thinY,
-      0.71 + 0.39 * x + 0.92 * thinY,
-      -2.2 - 0.88 * y + 0.48 * z,
-      nucleus ? 1 : 0.42,
-      nucleus ? 0.71 : 0.61,
-      nucleus ? 0.4 : 0.95,
-      nucleus ? 0.076 : 0.085 * (1 - radius / 0.15),
-      nucleus ? 0.008 + random() * 0.012 : 0.004 + random() * 0.012,
-    ]
-  })
-  const all = [...batches, beacons, center, field, foreground, companion]
+  const all = [...batches, beacons, center, field, foreground]
   return {
     body,
     field,
     foreground,
-    companion,
     anchors,
     setScale(scale, ratio) {
       for (const batch of all) {

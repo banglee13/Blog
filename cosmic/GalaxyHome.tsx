@@ -112,7 +112,7 @@ export default function GalaxyHome() {
         setPanel('search')
       } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
         event.preventDefault()
-        scene.current?.rotate(event.key === 'ArrowLeft' ? -12 : 12)
+        scene.current?.rotate(event.key === 'ArrowLeft' ? 12 : -12)
       } else if (
         !event.ctrlKey &&
         !event.metaKey &&

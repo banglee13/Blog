@@ -227,7 +227,7 @@ export function mountGalaxy(
   const bank = new THREE.Group(),
     tilt = new THREE.Group()
   model = makeGalaxyModel(articles)
-  scene.add(bank, model.field, model.foreground, model.companion)
+  scene.add(bank, model.field, model.foreground)
   bank.add(tilt)
   tilt.add(model.body)
   bank.rotation.z = 11 * RAD
@@ -324,7 +324,7 @@ export function mountGalaxy(
       DISTANCE - 0.16 * Math.sin(bearing),
     )
     aim.set(pointerX * 0.054, -pointerY * 0.039, 0)
-    // The observer sweeps past nearby stars while the distant companion moves
+    // The observer sweeps past nearby stars while the distant star field moves
     // only slightly. All perspective, parallax and occlusion remain in camera.
     if (entryWeight > 0) {
       camera.position.x -= entryWeight * (0.92 + 0.28 * (1 - entryWeight))
@@ -582,7 +582,7 @@ export function mountGalaxy(
       if (Math.hypot(dx, dy) > 4 || drag.moved) {
         drag.moved = true
         suppressClick = true
-        target = drag.angle + dx * 0.25
+        target = drag.angle - dx * 0.25
         tiltTarget = clamp(drag.tilt + dy * 0.24, 8, 156)
         canvas.style.cursor = 'grabbing'
         invalidate()
@@ -591,7 +591,7 @@ export function mountGalaxy(
     }
     if (!motion.matches) {
       const bounds = canvas.getBoundingClientRect()
-      wantedX = clamp((2 * (e.clientX - bounds.left)) / width - 1, -1, 1)
+      wantedX = clamp(1 - (2 * (e.clientX - bounds.left)) / width, -1, 1)
       wantedY = clamp((2 * (e.clientY - bounds.top)) / height - 1, -1, 1)
       invalidate()
     }
