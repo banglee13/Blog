@@ -159,8 +159,8 @@ export function Layout() {
             aria-expanded={panel === 'menu'}
             onClick={() => setPanel('menu')}
           >
-            <Orbit aria-hidden="true" size={19} strokeWidth={1.5} />
-            <span>星核导航</span>
+            <Orbit aria-hidden="true" size={24} strokeWidth={1.35} />
+            <span className="stellar-nav-label" aria-hidden="true">星核导航</span>
           </button>
           {panel === 'menu' && (
             <CoreMenu

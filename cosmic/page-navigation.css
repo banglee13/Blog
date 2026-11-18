@@ -3,31 +3,73 @@
   bottom: max(24px, env(safe-area-inset-bottom));
   right: max(26px, env(safe-area-inset-right));
   z-index: 35;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 0 15px 0 12px;
-  color: #e5e5f1;
-  background: #20263c;
-  border: 1px solid #5c6382;
-  border-radius: 24px;
-  box-shadow: 0 3px 12px #090b191c;
-  font-size: 12px;
-  font-weight: 500;
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  color: #dce8ff;
+  background: radial-gradient(ellipse at 38% 24%, #263349, #111725 74%);
+  border: 1px solid #7081a0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 3px #10162699, 0 3px 12px #03061155;
+  cursor: pointer;
+  transition: color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
-.stellar-nav-toggle svg {
-  color: #d0bafa;
+
+.stellar-nav-toggle > svg {
+  transition: transform 220ms ease;
 }
-.stellar-nav-toggle:hover {
-  background: #303752;
-  border-color: #a4a1c2;
-  color: #fff;
+
+.stellar-nav-toggle:is(:hover, :focus-visible, [aria-expanded='true']) {
+  color: #fff4dc;
+  border-color: #c0d4f4;
+  box-shadow: inset 0 0 0 3px #10162699, 0 0 16px #91baff44;
 }
+
+.stellar-nav-toggle:is(:hover, :focus-visible) > svg {
+  transform: rotate(-16deg);
+}
+
 .stellar-nav-toggle:focus-visible {
-  outline: 2px solid #a5b5ff;
+  outline: 2px solid #7d9ddd;
   outline-offset: 3px;
 }
+
+.stellar-nav-label {
+  position: absolute;
+  right: calc(100% + 10px);
+  padding: 5px 9px;
+  border: 1px solid #52617b;
+  border-radius: 6px;
+  background: #121a2a;
+  color: #e0eaff;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.stellar-nav-toggle[aria-expanded='false']:is(:hover, :focus-visible) .stellar-nav-label {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stellar-nav-toggle,
+  .stellar-nav-toggle > svg,
+  .stellar-nav-label {
+    transition: none;
+    transform: none;
+  }
+
+  .stellar-nav-toggle:is(:hover, :focus-visible) > svg {
+    transform: none;
+  }
+}
+
 @media print {
   .stellar-nav-toggle {
     display: none !important;
