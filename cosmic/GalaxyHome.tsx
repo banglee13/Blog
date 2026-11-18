@@ -113,6 +113,13 @@ export default function GalaxyHome() {
       } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
         event.preventDefault()
         scene.current?.rotate(event.key === 'ArrowLeft' ? -12 : 12)
+      } else if (
+        !event.ctrlKey &&
+        !event.metaKey &&
+        ['+', '=', '-'].includes(event.key)
+      ) {
+        event.preventDefault()
+        scene.current?.magnify(event.key === '-' ? 1 / 1.18 : 1.18)
       }
     }
     window.addEventListener('keydown', key)
@@ -131,7 +138,7 @@ export default function GalaxyHome() {
     <>
       <main
         className="galaxy-viewport"
-        aria-label="文章星图，拖动改变观察角度，滚轮旋转，点击恒星阅读，点击星核导航"
+        aria-label="文章星图，拖动改变观察角度，滚轮缩放，点击恒星阅读，点击星核导航"
         ref={stage}
       />
       {panel === 'menu' && (
@@ -139,6 +146,10 @@ export default function GalaxyHome() {
           onClose={close}
           onSearch={() => setPanel('search')}
           onGo={(path) => {
+            if (path === '/') {
+              close()
+              return
+            }
             returnTarget = 'core'
             navigate(path)
           }}

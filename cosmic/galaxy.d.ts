@@ -7,9 +7,11 @@ export interface GalaxyArticle {
 export interface GalaxyView {
   angle: number
   tilt: number
+  zoom?: number
 }
 export interface StarMap {
   rotate(delta: number): void
+  magnify(factor: number): void
   setActive(active: boolean): void
   getView(): GalaxyView
   approach(target: string, options?: { signal?: AbortSignal }): Promise<boolean>

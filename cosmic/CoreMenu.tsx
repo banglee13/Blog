@@ -212,7 +212,7 @@ export function CoreMenu({ onClose, onGo, onSearch }: CoreMenuProps) {
           </div>
         </div>
         <footer className="core-menu-footer">
-          <button type="button" onClick={() => dismiss(onClose)}>
+          <button type="button" onClick={() => go('/')}>
             <House />
             返回星图
           </button>

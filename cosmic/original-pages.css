@@ -1,12 +1,113 @@
-/*
- * The original theme provider removes data-starlog-theme for its default
- * palette. Named palettes and the user's gradient stay in its control.
- */
+/* Transparent to the original background settings. Only the default celestial
+   palette is changed; user-selected chromatic themes still own their accent. */
 :root:not([data-starlog-theme]) {
-  --theme-surface-light: #fafbfd;
-  --theme-surface-dark: #0c1018;
-  --theme-glow-primary-light: rgba(105, 143, 205, 0.16);
-  --theme-glow-secondary-light: rgba(186, 157, 125, 0.1);
-  --theme-glow-primary-dark: rgba(79, 112, 173, 0.16);
-  --theme-glow-secondary-dark: rgba(172, 134, 95, 0.1);
+  --theme-surface-light: #edf1f9;
+  --theme-surface-dark: #0b1021;
+  --theme-glow-primary-light: rgba(113, 158, 202, 0.16);
+  --theme-glow-secondary-light: rgba(167, 141, 211, 0.13);
+  --theme-glow-primary-dark: rgba(72, 131, 191, 0.23);
+  --theme-glow-secondary-dark: rgba(134, 87, 172, 0.2);
+}
+.stellar-page {
+  --sky-a: rgba(86, 156, 195, 0.22);
+  --sky-b: rgba(148, 109, 196, 0.22);
+  --sky-c: rgba(209, 158, 145, 0.11);
+  --sky-dust: #607fa3;
+  --sky-ice: #35688d;
+  --sky-violet: #8673a5;
+  --sky-gold: #a07856;
+  --sky-paper: rgba(252, 253, 255, 0.89);
+  --sky-edge: rgba(102, 123, 158, 0.22);
+  isolation: isolate;
+}
+.dark .stellar-page {
+  --sky-a: rgba(36, 108, 152, 0.29);
+  --sky-b: rgba(96, 60, 135, 0.33);
+  --sky-c: rgba(164, 87, 114, 0.12);
+  --sky-dust: #b3d2ee;
+  --sky-ice: #8dd6e3;
+  --sky-violet: #d0b6f7;
+  --sky-gold: #f2ccaa;
+  --sky-paper: rgba(20, 26, 43, 0.92);
+  --sky-edge: rgba(133, 153, 197, 0.2);
+}
+.stellar-sky {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 36% 70% at 0% 28%, var(--sky-a), transparent 93%),
+    radial-gradient(ellipse 36% 64% at 103% 72%, var(--sky-b), transparent 95%),
+    radial-gradient(ellipse 30% 36% at 10% 102%, var(--sky-c), transparent 95%);
+}
+.stellar-sky::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    transparent 11%,
+    var(--sky-a) 15%,
+    transparent 20%,
+    transparent 73%,
+    var(--sky-b) 80%,
+    transparent 89%
+  );
+  opacity: 0.21;
+}
+.stellar-sky-points {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.stellar-tone-0 {
+  fill: var(--sky-dust);
+  opacity: 0.58;
+}
+.stellar-tone-1 {
+  fill: var(--sky-violet);
+  opacity: 0.68;
+}
+.stellar-tone-2 {
+  fill: var(--sky-ice);
+  opacity: 0.67;
+}
+.stellar-tone-3 {
+  fill: var(--sky-gold);
+  opacity: 0.65;
+}
+.stellar-tone-4 {
+  fill: var(--sky-ice);
+  opacity: 0.68;
+}
+.stellar-page main .card {
+  background-color: var(--sky-paper);
+  border-color: var(--sky-edge);
+}
+.stellar-page main .card:is(a, button):hover {
+  border-color: color-mix(
+    in srgb,
+    var(--theme-accent, #6988c6) 55%,
+    var(--sky-edge)
+  );
+}
+.stellar-page main .chip {
+  border-color: var(--sky-edge);
+}
+.stellar-page
+  main
+  input:not([type='checkbox']):not([type='radio']):not(
+    [type='range']
+  ):focus-visible,
+.stellar-page main select:focus-visible {
+  outline-color: var(--theme-accent, #658ac9);
+}
+.stellar-page aside .sticky.top-24 {
+  top: 1.75rem;
+  max-height: calc(100vh - 3.5rem);
+}
+@media print {
+  .stellar-sky {
+    display: none;
+  }
 }

@@ -1157,10 +1157,9 @@ test('百宝箱与全屏极简回声洞（#93）：顶栏页签、用户背景�
 
     await new Promise((r) => setTimeout(r, 120))
 
-    // 1) 顶栏存在「百宝箱」页签，页面中仅展示「回声洞」模块入口
-    const header = container.querySelector('header.site-header')
-    assert.ok(header, '/toolbox 页面应正常渲染顶部导航栏')
-    assert.match(header.textContent || '', /百宝箱/, '顶部导航栏应包含「百宝箱」页签')
+    // 常规页面使用浮动星核导航；回声洞保持独占全屏。
+    assert.equal(container.querySelector('header.site-header'), null)
+    assert.ok(container.querySelector('.stellar-nav-toggle'), '百宝箱应保留星核导航入口')
 
     const echoLink = container.querySelector('a[href="/toolbox/echo"]')
     assert.ok(echoLink, '百宝箱页面应包含指向 /toolbox/echo 的「回声洞」入口')
@@ -2489,7 +2488,7 @@ test('issue #104：全屏编辑与吸顶页头、Ctrl+K / 斜杠搜索快捷键�
     // 1) 非全屏态：<main> 不得携带 z-10 创建层叠上下文陷阱；Ctrl+K 在编辑框内只插入链接而不弹搜索框
     const mainEl = rootEl.querySelector('main')
     assert.ok(mainEl && !/\bz-10\b/.test(mainEl.className), '<main> 不应携带 z-10 层叠上下文')
-    assert.ok(rootEl.querySelector('header.site-header'), '常规编辑态应保留顶部导航栏')
+    assert.ok(rootEl.querySelector('.stellar-nav-toggle'), '常规编辑态应保留星核导航入口')
 
     const ta = rootEl.querySelector('textarea.editor-textarea')
     assert.ok(ta, '应挂载编辑器正文 textarea')
@@ -2511,7 +2510,7 @@ test('issue #104：全屏编辑与吸顶页头、Ctrl+K / 斜杠搜索快捷键�
     enterFsBtn.click()
     await new Promise((r) => setTimeout(r, 40))
 
-    assert.equal(rootEl.querySelector('header.site-header'), null, '全屏编辑态应隐藏吸顶页头，避免与标题栏重叠')
+    assert.equal(rootEl.querySelector('.stellar-nav-toggle'), null, '全屏编辑态应隐藏星核导航')
     assert.equal(rootEl.querySelector('footer'), null, '全屏编辑态应隐藏页脚')
     assert.equal(env.dom.window.document.documentElement.dataset.editorFullscreen, 'true')
     assert.equal(env.dom.window.document.documentElement.style.overflow, 'hidden')
@@ -2551,7 +2550,7 @@ test('issue #104：全屏编辑与吸顶页头、Ctrl+K / 斜杠搜索快捷键�
       new env.dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
     )
     await new Promise((r) => setTimeout(r, 40))
-    assert.ok(rootEl.querySelector('header.site-header'), '退出全屏后应立即恢复顶部导航栏')
+    assert.ok(rootEl.querySelector('.stellar-nav-toggle'), '退出全屏后应立即恢复星核导航')
     assert.equal(env.dom.window.document.documentElement.style.overflow, '')
   } finally {
     reactRoot.unmount()

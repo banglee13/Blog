@@ -97,11 +97,49 @@ export function makeGalaxyModel(articles) {
   const random = makeRandom(197904)
   const bell = () => random() + random() + random() + random() - 2
   const clip = (x) => Math.max(0, Math.min(1, x))
-  const golden = [1, 0.74, 0.45],
-    pearl = [0.85, 0.81, 0.76],
-    ice = [0.53, 0.68, 0.96]
-  const armPhase = (r) => 2.72 * Math.log(1 + r / 0.24) - 1.7
-  const branches = [0, Math.PI, 0.38, Math.PI + 0.43]
+  const golden = [1, 0.4, 0.09],
+    pearl = [1, 0.85, 0.59]
+  // Three major streams and a shorter spur. Most light is in the ridges;
+  // the intervening disc stays dark enough to see their silhouette.
+  const armPhase = (r) => 4.1 * Math.log(1 + r / 0.27) - 2.2
+  const branches = [0, 2.34, 4.3, 0.46]
+  const starts = [0.074, 0.1, 0.19, 0.49]
+  const ends = [1.14, 1.04, 0.96, 1.12]
+  const nebulae = [
+    [
+      [1, 0.33, 0.05],
+      [0.91, 0.08, 0.29],
+      [0.35, 0.088, 0.98],
+      [0.08, 0.63, 0.94],
+    ],
+    [
+      [1, 0.57, 0.1],
+      [0.18, 0.67, 0.72],
+      [0.035, 0.65, 0.88],
+      [0.13, 0.26, 1],
+    ],
+    [
+      [1, 0.31, 0.13],
+      [0.59, 0.115, 0.78],
+      [0.3, 0.21, 0.97],
+      [0.23, 0.64, 0.92],
+    ],
+    [
+      [0.98, 0.19, 0.29],
+      [0.72, 0.14, 0.61],
+      [0.37, 0.22, 0.84],
+      [0.08, 0.61, 0.82],
+    ],
+  ]
+  function gasColour(branch, r, lane) {
+    const t = clip((r - 0.09) / 0.98 + lane * 0.11) * 2.999
+    const seg = Math.floor(t),
+      f = t - seg,
+      smooth = f * f * (3 - 2 * f)
+    return nebulae[branch][seg].map((a, k) =>
+      lerp(a, nebulae[branch][seg + 1][k], smooth),
+    )
+  }
   const body = new THREE.Group()
 
   // A thin exponential disk of old stars makes the interior continuous. Spiral
@@ -118,14 +156,14 @@ export function makeGalaxyModel(articles) {
   function oldDisk(cloud) {
     const [x, y, z, r] = diskPos(),
       warm = Math.exp(-r * 2.75)
-    const a = clip((1.22 - r) * 4) * (cloud ? 0.027 : 0.38)
+    const a = clip((1.22 - r) * 4) * (cloud ? 0.011 : 0.2)
     return [
       x,
       y,
       z,
-      0.56 + 0.41 * warm,
-      0.62 + 0.14 * warm,
-      0.84 - 0.3 * warm,
+      0.27 + 0.58 * warm,
+      0.31 + 0.19 * warm,
+      0.72 - 0.5 * warm,
       a,
       cloud ? 0.025 + random() * 0.078 : 0.0012 + random() * 0.0041,
     ]
@@ -137,26 +175,34 @@ export function makeGalaxyModel(articles) {
     const side = branch % 2
     let phi = armPhase(r) + branches[branch]
     phi += 0.13 * Math.sin(5.7 * r + side * 0.8) + 0.19 * side * r * r
-    if (branch > 1) phi += (r - 0.4) * (0.43 + side * 0.32)
+    if (branch === 3) phi += (r - 0.5) * 0.56
     return phi
   }
   function armPos(phase) {
     const f = random(),
-      branch = f < 0.44 ? 0 : f < 0.78 ? 1 : f < 0.91 ? 2 : 3
-    const lo = branch > 1 ? 0.32 : 0.072,
-      hi = [1.11, 0.97, 0.96, 0.86][branch]
+      branch = f < 0.36 ? 0 : f < 0.68 ? 1 : f < 0.91 ? 2 : 3
+    const lo = starts[branch],
+      hi = ends[branch]
     const r = lo + (hi - lo) * random() ** 0.74
     const t = path(branch, r),
       n = bell()
+    // Coherent strands braid, separate and rejoin along each arm.
+    const lane = Math.floor(random() * 8)
+    const braid =
+      (lane - 3.5) * (0.0025 + 0.008 * r) +
+      (0.004 + 0.014 * r) * Math.sin(13 * r + lane * 1.66 + branch)
+    const spray = random() < 0.26 ? 1.9 + 2.3 * r : 1
     const offset =
-      n * (0.043 + 0.088 * r) + (noise(r * 10, branch * 7) - 0.5) * 0.058
+      braid +
+      n * (0.015 + 0.041 * r) * spray +
+      (noise(r * 10, branch * 7) - 0.5) * 0.045
     const radial = r + offset + phase
     const x = radial * Math.cos(t),
       y = radial * Math.sin(t)
     const z = 0.016 * r * Math.sin(t * 2 - 0.3) + bell() * (0.016 + 0.013 * r)
     const taper =
       clip((hi - r) / (0.18 + 0.03 * branch)) * clip((r - 0.047) / 0.16)
-    return [x, y, z, r, taper]
+    return [x, y, z, r, taper, branch, offset]
   }
   const emission = (x, y) => {
     const coarse = noise(6 * x + 25, 6 * y - 11),
@@ -165,21 +211,18 @@ export function makeGalaxyModel(articles) {
     return 0.11 + 1.6 * (0.51 * coarse + 0.33 * mid + 0.16 * fine) ** 2.2
   }
   function arm(cloud) {
-    const [x, y, z, r, taper] = armPos(cloud ? 0 : -0.006)
-    const lit = emission(x, y),
-      warm = Math.exp((-r * r) / 0.22)
-    const temp = [
-      ice[0] + 0.43 * warm,
-      ice[1] + 0.09 * warm,
-      ice[2] - 0.36 * warm,
-    ]
+    const [x, y, z, r, taper, branch, offset] = armPos(cloud ? 0 : -0.006)
+    const lit = emission(x, y)
+    const hue = gasColour(branch, r, offset * 12 + lit * 0.4)
+    const pearlMix = cloud ? 0.085 : 0.1 + random() ** 3 * 0.72
+    const temp = hue.map((c) => lerp(c, 1, pearlMix))
     return [
       x,
       y,
       z,
       ...temp,
-      taper * lit * (cloud ? 0.092 : 0.5 + random() * 0.41),
-      cloud ? 0.017 + random() * 0.05 : 0.0015 + random() * 0.004,
+      taper * (0.11 + lit * 0.82) * (cloud ? 0.105 : 0.46 + random() * 0.39),
+      cloud ? 0.018 + random() * 0.058 : 0.0014 + random() * 0.0042,
     ]
   }
 
@@ -188,9 +231,9 @@ export function makeGalaxyModel(articles) {
   function bulge(cloud) {
     const r = Math.sqrt(-Math.log(Math.max(0.00001, random()))),
       t = random() * TAU
-    const x = 0.184 * r * Math.cos(t),
-      y = 0.126 * r * Math.sin(t),
-      z = bell() * 0.063
+    const x = 0.1 * r * Math.cos(t),
+      y = 0.078 * r * Math.sin(t),
+      z = bell() * 0.036
     const heat = Math.exp(-r * 1.8)
     return [
       x,
@@ -204,23 +247,22 @@ export function makeGalaxyModel(articles) {
     ]
   }
   const batches = [
-    population(14000, () => oldDisk(true)),
+    population(6500, () => oldDisk(true)),
     population(24500, () => arm(true)),
-    population(5600, () => bulge(true)),
-    population(49000, () => oldDisk(false)),
+    population(2900, () => bulge(true)),
+    population(22000, () => oldDisk(false)),
     population(66000, () => arm(false)),
-    population(12300, () => bulge(false)),
+    population(8200, () => bulge(false)),
   ]
 
   // Leading-edge dust lanes are narrow warped volumes, not black outlines.
   // Core-side lanes are strongest; gaps and feathered ends leave starlight
   // visible between them. Foreground stars render after the absorbing dust.
-  const dust = population(16000, () => {
+  const dust = population(9000, () => {
     const f = random(),
       branch = f < 0.45 ? 0 : f < 0.84 ? 1 : f < 0.92 ? 2 : 3
     const r =
-      (branch > 1 ? 0.34 : 0.065) +
-      (branch > 1 ? 0.51 : 0.88) * random() ** 0.83
+      starts[branch] + (ends[branch] - starts[branch]) * random() ** 0.85
     const t = path(branch, r)
     const width = 0.007 + 0.016 * r,
       rr =
@@ -240,7 +282,7 @@ export function makeGalaxyModel(articles) {
       0.07,
       0.053,
       0.044,
-      (0.058 + random() * 0.106) *
+      (0.026 + random() * 0.064) *
         gap *
         clip((0.99 - r) / 0.24) *
         clip((r - 0.062) / 0.09),
@@ -263,9 +305,9 @@ export function makeGalaxyModel(articles) {
       p[0] + bell() * spread,
       p[1] + bell() * spread,
       p[2] + bell() * 0.009,
-      red ? 1 : 0.53,
-      red ? 0.34 : 0.7,
-      red ? 0.59 : 1,
+      red ? 1 : 0.16,
+      red ? 0.18 : 0.64,
+      red ? 0.48 : 1,
       (red ? 0.112 : 0.068) * p[4],
       (red ? 0.019 : 0.012) + random() * 0.027,
     ]

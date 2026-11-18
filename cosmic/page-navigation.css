@@ -1,0 +1,35 @@
+.stellar-nav-toggle {
+  position: fixed;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  right: max(26px, env(safe-area-inset-right));
+  z-index: 35;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 15px 0 12px;
+  color: #e5e5f1;
+  background: #20263c;
+  border: 1px solid #5c6382;
+  border-radius: 24px;
+  box-shadow: 0 3px 12px #090b191c;
+  font-size: 12px;
+  font-weight: 500;
+}
+.stellar-nav-toggle svg {
+  color: #d0bafa;
+}
+.stellar-nav-toggle:hover {
+  background: #303752;
+  border-color: #a4a1c2;
+  color: #fff;
+}
+.stellar-nav-toggle:focus-visible {
+  outline: 2px solid #a5b5ff;
+  outline-offset: 3px;
+}
+@media print {
+  .stellar-nav-toggle {
+    display: none !important;
+  }
+}

@@ -5,9 +5,12 @@ import { getLabelOrder } from './galaxy-catalog.js'
 const RAD = Math.PI / 180
 const CORE = -1
 const NONE = -2
-const ANGLE_LIMIT = 36
+const MIN_ZOOM = 0.55
+const MAX_ZOOM = 2.65
 const DISTANCE = 4
 const LABEL_FONT = '13px "Segoe UI","Microsoft YaHei",sans-serif'
+// Once per document, including remounts due to route changes and StrictMode.
+let introduced = false
 const clamp = THREE.MathUtils.clamp
 
 function makeTitle(text) {
@@ -105,14 +108,20 @@ export function mountGalaxy(
     height = 0,
     hover = NONE,
     focus = NONE
-  let orbitTilt = clamp(Number(initialView?.tilt) || 68, 8, 156),
+  let orbitTilt = clamp(Number(initialView?.tilt) || 40, 8, 156),
     tiltTarget = orbitTilt
+  let zoom = clamp(Number(initialView?.zoom) || 1, MIN_ZOOM, MAX_ZOOM)
+  let zoomTarget = zoom,
+    focalScale = 1,
+    renderRatio = 1
   let pointerX = 0,
     pointerY = 0,
     wantedX = 0,
     wantedY = 0,
     drag = null,
     suppressClick = false
+  let introStart = null,
+    entryWeight = 0
   let flight = null,
     arrival = 0,
     flightTarget = null,
@@ -162,11 +171,12 @@ export function mountGalaxy(
         root.remove()
       },
       rotate() {},
+      magnify() {},
       reset() {},
       approach: async () => true,
       returnFrom: async () => true,
       cancelTransition() {},
-      getView: () => ({ angle, tilt: orbitTilt }),
+      getView: () => ({ angle, tilt: orbitTilt, zoom }),
       getAngle: () => angle,
       setActive: (v) => {
         active = v
@@ -177,7 +187,7 @@ export function mountGalaxy(
   const canvas = renderer.domElement
   canvas.className = 'gx-canvas'
   canvas.setAttribute('role', 'img')
-  canvas.setAttribute('aria-label', '可通过滚轮旋转的三维星系')
+  canvas.setAttribute('aria-label', '三维文章星系，拖动环视，滚轮缩放')
   root.append(canvas)
   renderer.setClearColor(0x04060b)
   renderer.autoClear = false
@@ -293,12 +303,18 @@ export function mountGalaxy(
       count++
       label.rect = rect
       sprite.position.set(left, height - top - label.height / 2, 0)
-      sprite.material.opacity = (emphasis ? 1 : 0.83) * (1 - arrival * 0.95)
+      sprite.material.opacity =
+        (emphasis ? 1 : 0.83) * (1 - arrival * 0.95) * (1 - entryWeight)
       sprite.visible = true
     }
   }
   function render() {
     if (disposed || !width || !height || renderState !== 'webgl') return
+    if (camera.zoom !== zoom) {
+      camera.zoom = zoom
+      camera.updateProjectionMatrix()
+      model.setScale(focalScale * zoom, renderRatio)
+    }
     model.body.rotation.z = (angle + 42) * RAD
     tilt.rotation.x = (orbitTilt + 6 * Math.sin(angle * RAD * 0.5)) * RAD
     const bearing = angle * RAD
@@ -308,6 +324,15 @@ export function mountGalaxy(
       DISTANCE - 0.16 * Math.sin(bearing),
     )
     aim.set(pointerX * 0.054, -pointerY * 0.039, 0)
+    // The observer sweeps past nearby stars while the distant companion moves
+    // only slightly. All perspective, parallax and occlusion remain in camera.
+    if (entryWeight > 0) {
+      camera.position.x -= entryWeight * (0.92 + 0.28 * (1 - entryWeight))
+      camera.position.y += entryWeight * 0.34
+      camera.position.z -= entryWeight * 2.65
+      aim.x -= entryWeight * 0.45
+      aim.y += entryWeight * 0.08
+    }
     if (arrival && flightTarget) {
       bank.updateMatrixWorld()
       focusPoint.copy(flightTarget).applyMatrix4(model.body.matrixWorld)
@@ -335,6 +360,14 @@ export function mountGalaxy(
     const dt = lastFrame ? Math.min(64, time - lastFrame) : 16.7
     lastFrame = time
     const easing = 1 - Math.exp(-dt / 78)
+    zoom += (zoomTarget - zoom) * easing
+    if (Math.abs(zoomTarget - zoom) < 0.0007 || motion.matches)
+      zoom = zoomTarget
+    if (introStart !== null) {
+      const t = clamp((time - introStart) / 1880, 0, 1)
+      entryWeight = (1 - t) ** 2.4
+      if (t === 1 || motion.matches) stopIntroduction()
+    }
     angle += (target - angle) * easing
     if (Math.abs(target - angle) < 0.035 || motion.matches) angle = target
     tiltTarget = clamp(tiltTarget, 8, 156)
@@ -367,8 +400,10 @@ export function mountGalaxy(
     if (
       target !== angle ||
       orbitTilt !== tiltTarget ||
+      zoom !== zoomTarget ||
       pointerX !== wantedX ||
       pointerY !== wantedY ||
+      introStart !== null ||
       flight ||
       meteorStart
     )
@@ -391,14 +426,16 @@ export function mountGalaxy(
     renderer.setPixelRatio(ratio)
     renderer.setSize(width, height, false)
     hdr?.setSize(Math.round(width * ratio), Math.round(height * ratio))
-    const radius = Math.min(width * 0.376, height * 0.675)
+    const radius = Math.min(width * 0.365, height * 0.54)
     camera.aspect = width / height
     camera.fov = (2 * Math.atan(height / (2 * radius * DISTANCE))) / RAD
     camera.updateProjectionMatrix()
     textCamera.right = width
     textCamera.top = height
     textCamera.updateProjectionMatrix()
-    model.setScale(radius * DISTANCE * ratio, ratio)
+    renderRatio = ratio
+    focalScale = radius * DISTANCE * ratio
+    model.setScale(focalScale * zoom, ratio)
     invalidate()
   }
   function hit(e) {
@@ -426,11 +463,13 @@ export function mountGalaxy(
   }
   function rotate(delta) {
     if (!active || !Number.isFinite(delta)) return
+    stopIntroduction()
     if (flight) cancelTransition()
     target += delta
     invalidate()
   }
   function cancelTransition() {
+    stopIntroduction()
     if (flight) {
       const current = flight
       flight = null
@@ -477,6 +516,12 @@ export function mountGalaxy(
       invalidate()
     })
   }
+  function stopIntroduction() {
+    if (introStart === null) return
+    introStart = null
+    entryWeight = 0
+    invalidate()
+  }
   function scheduleMeteor() {
     clearTimeout(meteorTimer)
     meteorTimer = 0
@@ -510,21 +555,27 @@ export function mountGalaxy(
     meteorMaterial.opacity = Math.sin(Math.PI * clamp(t, 0, 1)) * 0.83
     meteor.visible = true
   }
+  function magnify(factor) {
+    if (!active || !Number.isFinite(factor) || factor <= 0) return
+    stopIntroduction()
+    if (flight) cancelTransition()
+    zoomTarget = clamp(zoomTarget * factor, MIN_ZOOM, MAX_ZOOM)
+    invalidate()
+  }
   listen(
     canvas,
     'wheel',
     (e) => {
       if (!active || e.ctrlKey) return
       e.preventDefault()
-      const amount =
-        Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
       const factor = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? height : 1
-      rotate(clamp(amount * factor * 0.12, -ANGLE_LIMIT, ANGLE_LIMIT))
+      magnify(Math.exp(-clamp(e.deltaY * factor, -320, 320) * 0.00155))
     },
     { passive: false },
   )
   listen(canvas, 'pointermove', (e) => {
     if (!active || flight) return
+    if (e.isTrusted) stopIntroduction()
     if (drag && e.pointerId === drag.id) {
       const dx = e.clientX - drag.x,
         dy = e.clientY - drag.y
@@ -562,6 +613,7 @@ export function mountGalaxy(
   })
   listen(canvas, 'pointerdown', (e) => {
     if (!active || e.button !== 0) return
+    stopIntroduction()
     if (flight) cancelTransition()
     suppressClick = false
     drag = {
@@ -597,8 +649,10 @@ export function mountGalaxy(
     focus = id
     invalidate()
   })
+  listen(window, 'keydown', () => stopIntroduction(), { capture: true })
   listen(document, 'visibilitychange', () => {
     if (document.hidden) {
+      stopIntroduction()
       if (flight) cancelTransition()
       clearTimeout(meteorTimer)
       meteorStart = 0
@@ -611,6 +665,7 @@ export function mountGalaxy(
     }
   })
   listen(motion, 'change', () => {
+    if (motion.matches) stopIntroduction()
     wantedX = wantedY = 0
     scheduleMeteor()
     invalidate()
@@ -627,24 +682,32 @@ export function mountGalaxy(
   })
   const observer = new ResizeObserver(resize)
   observer.observe(container)
+  if (!introduced && !initialView && !document.hidden && !motion.matches) {
+    entryWeight = 1
+    introStart = performance.now()
+  }
+  introduced = true
   resize()
   render()
   scheduleMeteor()
   return {
     rotate,
+    magnify,
     getAngle: () => angle,
-    getView: () => ({ angle, tilt: orbitTilt }),
+    getView: () => ({ angle, tilt: orbitTilt, zoom }),
     approach: (id, options) => travel(id, false, options),
     returnFrom: (id, options) => travel(id, true, options),
     cancelTransition,
     reset() {
       target = Math.round(angle / 360) * 360
-      tiltTarget = 68
+      tiltTarget = 40
+      zoomTarget = 1
       wantedX = wantedY = 0
       invalidate()
     },
     setActive(v) {
       active = Boolean(v)
+      if (!active) stopIntroduction()
       if (active) {
         scheduleMeteor()
         invalidate()
