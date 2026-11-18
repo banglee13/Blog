@@ -14,7 +14,7 @@
  */
 
 /** 快照格式版本：字段含义变化时递增，解析旧快照时按版本兼容。 */
-export const SETTINGS_SNAPSHOT_VERSION = 1
+export const SETTINGS_SNAPSHOT_VERSION = 2
 
 /** GitHub 的评论 / 讨论正文上限是 65536 字符，留出外壳与提示文案的余量。 */
 export const SETTINGS_BODY_LIMIT = 60_000
@@ -99,6 +99,11 @@ export const SYNCED_SETTINGS: SyncedSettingSpec[] = [
     name: 'colorTheme',
     label: '配色主题',
     valid: (value) => typeof value === 'string' && value.length <= 40,
+  },
+  {
+    name: 'siteLayout',
+    label: '站点外观',
+    valid: (value) => value === 'classic' || value === 'galaxy',
   },
   {
     name: 'themeMode',
@@ -186,10 +191,29 @@ export function measureChars(value: unknown): number {
 export interface SettingsSnapshot {
   version: number
   login: string
-  /** 快照写入时间；合并时作为「远端是否比本机新」的比较基准 */
+  /** 快照写入时间，仅用于显示和兼容旧版。 */
   updatedAt: number
   values: PersonalSettings
+  stamps?: Record<string, number>
   skipped?: Record<string, string>
+}
+
+export function settingStamp(snapshot: SettingsSnapshot, name: string): number {
+  return snapshot.stamps?.[name] ?? (snapshot.version === 1 ? snapshot.updatedAt : 0)
+}
+
+/** Compare each value with the latest remote value before replacing the discussion. */
+export function mergeSettingsForSave(local: SettingsSnapshot, remote: SettingsSnapshot | null): SettingsSnapshot {
+  const values = { ...remote?.values }
+  const stamps = Object.fromEntries(Object.keys(values).map((name) => [name, settingStamp(remote!, name)]))
+  for (const [name, value] of Object.entries(local.values)) {
+    const stamp = settingStamp(local, name)
+    if (!(name in values) || stamp > stamps[name]) {
+      values[name] = value
+      stamps[name] = stamp
+    }
+  }
+  return { ...local, values, stamps }
 }
 
 export function settingsDiscussionMarker(login: string): string {
@@ -240,6 +264,9 @@ function serializeSnapshot(snapshot: SettingsSnapshot): string {
     login: snapshot.login,
     updatedAt: snapshot.updatedAt,
     values: snapshot.values,
+    ...(snapshot.stamps && {
+      stamps: Object.fromEntries(Object.keys(snapshot.values).map((name) => [name, settingStamp(snapshot, name)])),
+    }),
     ...(snapshot.skipped && Object.keys(snapshot.skipped).length > 0 ? { skipped: snapshot.skipped } : {}),
   })
 }
@@ -264,6 +291,7 @@ export function parseSettingsDiscussionBody(body: string, expectedLogin?: string
     login?: unknown
     updatedAt?: unknown
     values?: unknown
+    stamps?: unknown
     skipped?: unknown
   }
   if (typeof data.version === 'number' && data.version > SETTINGS_SNAPSHOT_VERSION) return null
@@ -271,12 +299,15 @@ export function parseSettingsDiscussionBody(body: string, expectedLogin?: string
   const login = typeof data.login === 'string' ? data.login : ''
   if (expectedLogin && login && login !== expectedLogin) return null
   const values: PersonalSettings = {}
+  const stamps: Record<string, number> = {}
   const skipped: Record<string, string> = {}
   for (const [name, value] of Object.entries(data.values)) {
     const spec = SPEC_BY_NAME.get(name)
     // 未知键（别的版本写进来的）与不合法的值都直接丢掉，避免把坏数据灌回本地存储
     if (!spec || !spec.valid(value)) continue
     values[name] = value
+    const stamp = isObject(data.stamps) ? data.stamps[name] : undefined
+    if (typeof stamp === 'number' && Number.isFinite(stamp) && stamp >= 0) stamps[name] = stamp
   }
   if (isObject(data.skipped)) {
     for (const [name, reason] of Object.entries(data.skipped)) {
@@ -284,10 +315,11 @@ export function parseSettingsDiscussionBody(body: string, expectedLogin?: string
     }
   }
   return {
-    version: typeof data.version === 'number' ? data.version : SETTINGS_SNAPSHOT_VERSION,
+    version: typeof data.version === 'number' ? data.version : 1,
     login,
     updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : 0,
     values,
+    stamps,
     skipped: Object.keys(skipped).length > 0 ? skipped : undefined,
   }
 }
@@ -297,6 +329,7 @@ export interface MergeInput {
   remote: PersonalSettings
   /** 远端快照的写入时间 */
   remoteUpdatedAt: number
+  remoteStamps?: Record<string, number>
   /** 本机各偏好最后一次被改动的时间（由 settingsSync 记录） */
   localStamps: Record<string, number>
 }
@@ -315,13 +348,13 @@ export interface MergeResult {
  * 本机在那之后改过的项目保留本机值，其余采用远端值。
  * 这样多设备切换时不会因为某一台的旧快照而整体回退。
  */
-export function mergeRemoteSettings({ remote, remoteUpdatedAt, localStamps }: MergeInput): MergeResult {
+export function mergeRemoteSettings({ remote, remoteUpdatedAt, remoteStamps, localStamps }: MergeInput): MergeResult {
   const apply: PersonalSettings = {}
   const keepLocal: string[] = []
   const fresh: string[] = []
   for (const [name, value] of Object.entries(remote)) {
     const stamp = localStamps[name]
-    if (typeof stamp === 'number' && stamp > remoteUpdatedAt) {
+    if (typeof stamp === 'number' && stamp > (remoteStamps?.[name] ?? remoteUpdatedAt)) {
       keepLocal.push(name)
       continue
     }

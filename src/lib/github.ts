@@ -1,5 +1,6 @@
 import { commentsConfig, githubConfig, oauthConfig, settingsSyncConfig, STORAGE_KEYS } from './config'
 import {
+  mergeSettingsForSave,
   parseSettingsDiscussionBody,
   renderSettingsDiscussionBody,
   settingsDiscussionMarker,
@@ -1172,6 +1173,7 @@ export interface GithubBackgroundPreference {
   themeMode?: string
   /** 动态背景场景与每个场景各自的参数 */
   animatedBackground?: GithubAnimatedBackgroundPreference
+  siteLayout?: 'classic' | 'galaxy'
 }
 
 const BACKGROUND_SETTINGS_DIR = '.starlog/settings/background-preferences'
@@ -1197,6 +1199,7 @@ export async function fetchGithubBackgroundPreference(
       colorTheme: typeof parsed.colorTheme === 'string' ? parsed.colorTheme : undefined,
       themeMode: typeof parsed.themeMode === 'string' ? parsed.themeMode : undefined,
       animatedBackground: parseAnimatedBackgroundPreference(parsed.animatedBackground),
+      siteLayout: parsed.siteLayout === 'classic' || parsed.siteLayout === 'galaxy' ? parsed.siteLayout : undefined,
     }
   } catch (err) {
     if (err instanceof Error && /找不到资源/.test(err.message)) return null
@@ -1427,8 +1430,9 @@ export async function saveGithubSettingsSnapshot(
   target = getRepoTarget(),
 ): Promise<{ url: string; created: boolean }> {
   const context = await getSettingsDiscussionRepository(target)
-  const body = renderSettingsDiscussionBody(login, snapshot)
   const existing = await locateSettingsDiscussion(login, context, target)
+  const latest = existing ? parseSettingsDiscussionBody(existing.body, login) : null
+  const body = renderSettingsDiscussionBody(login, mergeSettingsForSave(snapshot, latest))
   if (existing) {
     await githubGraphql(
       `mutation UpdateSettingsDiscussion($discussionId: ID!, $body: String!) {
@@ -1501,6 +1505,7 @@ export async function loadLegacySettingsValues(login: string, target = getRepoTa
     if (background.colorTheme) values.colorTheme = background.colorTheme
     if (background.themeMode) values.themeMode = background.themeMode
     if (background.animatedBackground) values.animatedBackground = background.animatedBackground
+    if (background.siteLayout) values.siteLayout = background.siteLayout
   }
   return values
 }

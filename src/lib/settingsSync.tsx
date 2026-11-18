@@ -26,6 +26,8 @@ import {
   collectSyncedSettings,
   isSyncedSetting,
   mergeRemoteSettings,
+  settingStamp,
+  SETTINGS_SNAPSHOT_VERSION,
   syncedSettingLabel,
   type SettingsSnapshot,
 } from './settingsSnapshot'
@@ -214,15 +216,23 @@ export function SettingsSyncProvider({ children }: { children: ReactNode }) {
         return false
       }
       const { values, skipped } = collect()
-      const hash = snapshotFingerprint(values)
+      const hash = snapshotFingerprint({ login, values })
       if (hash === metaRef.current.lastPushedFingerprint) {
         update({ status: 'synced', pending: [], skipped, lastError: '' })
         return false
       }
       update({ status: 'saving', skipped })
-      const snapshot: SettingsSnapshot = { version: 1, login, updatedAt: Date.now(), values, skipped }
+      const snapshot: SettingsSnapshot = {
+        version: SETTINGS_SNAPSHOT_VERSION,
+        login,
+        updatedAt: Date.now(),
+        values,
+        stamps: metaRef.current.stamps,
+        skipped,
+      }
       try {
         const result = await saveGithubSettingsSnapshot(login, snapshot)
+        if (loginRef.current !== login) return false
         const meta: SyncMeta = {
           ...metaRef.current,
           lastSyncedAt: snapshot.updatedAt,
@@ -270,6 +280,7 @@ export function SettingsSyncProvider({ children }: { children: ReactNode }) {
       update({ status: 'restoring', lastError: '' })
       try {
         const result = await loadGithubSettingsSnapshot(login)
+        if (loginRef.current !== login) return
         const snapshot = result.snapshot
         let keepLocal: string[] = []
         let migratedFromRepo = false
@@ -277,14 +288,20 @@ export function SettingsSyncProvider({ children }: { children: ReactNode }) {
         if (snapshot) {
           const merged = mergeRemoteSettings({
             remote: snapshot.values,
-            remoteUpdatedAt: snapshot.updatedAt,
+            remoteUpdatedAt: snapshot.version === 1 ? snapshot.updatedAt : 0,
+            remoteStamps: snapshot.stamps,
             localStamps: metaRef.current.stamps,
           })
+          for (const name of Object.keys(collect().skipped)) delete merged.apply[name]
           applyLocally(merged.apply)
+          const stamps = { ...metaRef.current.stamps }
+          for (const name of Object.keys(merged.apply)) stamps[name] = settingStamp(snapshot, name)
+          metaRef.current = { ...metaRef.current, stamps }
           keepLocal = merged.keepLocal
         } else {
           // 远端还是空的：旧版本把偏好写在仓库里，先把它搬过来，从此不再依赖仓库文件
           const legacy = await loadLegacySettingsValues(login).catch(() => ({}) as PersonalSettings)
+          if (loginRef.current !== login) return
           if (Object.keys(legacy).length > 0) {
             applyLocally(legacy)
             migratedFromRepo = true
@@ -313,7 +330,7 @@ export function SettingsSyncProvider({ children }: { children: ReactNode }) {
         update({ status: 'error', lastError: err instanceof Error ? err.message : '读取账号设置失败' })
       }
     },
-    [applyLocally, push, toast, update],
+    [applyLocally, collect, push, toast, update],
   )
 
   // 登录 / 换账号：先恢复，之后才开始监听本机改动
@@ -365,9 +382,13 @@ export function SettingsSyncProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (OFFLINE) return
     const onStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEYS.settingsSync) {
+        metaRef.current = readMeta()
+        return
+      }
       if (event.key && event.key !== STORAGE_KEYS.personalSettings) return
       const { values } = collect()
-      if (snapshotFingerprint(values) === metaRef.current.lastPushedFingerprint) {
+      if (snapshotFingerprint({ login: loginRef.current, values }) === metaRef.current.lastPushedFingerprint) {
         update({ pending: [], status: loginRef.current ? 'synced' : 'local' })
         return
       }

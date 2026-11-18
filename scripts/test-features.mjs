@@ -2897,6 +2897,79 @@ const lanDocMod = await importTsModule('src/lib/lanDoc.ts')
 const lanSyncMod = await importTsModule('src/lib/lanSync.ts')
 const lanHubMod = await import(new URL('./offline-hub.mjs', import.meta.url))
 
+test('account settings preserve independent device edits and round-trip site layout', () => {
+  const { collectSyncedSettings, mergeSettingsForSave, mergeRemoteSettings, parseSettingsDiscussionBody, renderSettingsDiscussionBody } = settingsSnapshotMod
+  const remote = {
+    version: 2, login: 'reader', updatedAt: 200,
+    values: { themeMode: 'dark', siteLayout: 'galaxy' },
+    stamps: { themeMode: 150, siteLayout: 120 },
+  }
+  const local = {
+    version: 2, login: 'reader', updatedAt: 300,
+    values: collectSyncedSettings({ colorTheme: 'ocean', themeMode: 'light', siteLayout: 'classic' }).values,
+    stamps: { colorTheme: 280, themeMode: 20, siteLayout: 30 },
+  }
+  assert.equal(local.values.siteLayout, 'classic')
+  const merged = mergeSettingsForSave(local, remote)
+  const parsed = parseSettingsDiscussionBody(renderSettingsDiscussionBody('reader', merged), 'reader')
+  assert.deepEqual(parsed.values, { themeMode: 'dark', siteLayout: 'galaxy', colorTheme: 'ocean' })
+  assert.deepEqual(parsed.stamps, { themeMode: 150, siteLayout: 120, colorTheme: 280 })
+  const restored = mergeRemoteSettings({
+    remote: parsed.values, remoteUpdatedAt: 0, remoteStamps: parsed.stamps, localStamps: { themeMode: 170 },
+  })
+  assert.deepEqual(restored.keepLocal, ['themeMode'])
+  assert.equal(restored.apply.siteLayout, 'galaxy')
+})
+
+test('LAN collaboration retries unconfirmed edits before replacing local text', async () => {
+  const { createLanSession } = lanSyncMod
+  const { textToBlocks, applyRemoteOps } = lanDocMod
+  let state = { blocks: textToBlocks('Original', 'peer'), rev: 1, peers: [] }
+  let posts = 0
+  const shown = []
+  let finish
+  const delivered = new Promise((resolve) => { finish = resolve })
+  const session = createLanSession({
+    room: 'retry', name: 'writer', retryMs: 10, quietMs: 1000,
+    handlers: {
+      onPeers() {},
+      onStatus() {},
+      onText(text) {
+        shown.push(text)
+        if (text.includes('Latest version')) finish()
+      },
+    },
+  }, {
+    async request(route, options) {
+      if (route === '/api/ops') {
+        posts++
+        if (posts === 1) throw new Error('Disconnected')
+        state = { ...state, rev: state.rev + 1, blocks: applyRemoteOps(state.blocks, options.body.ops).blocks }
+      }
+      return state
+    },
+    subscribe() { return () => {} },
+  })
+  try {
+    await session.join()
+    session.pushLocalText('First version')
+    await session.flush()
+    session.pushLocalText('Latest version')
+    let timer
+    try {
+      await Promise.race([delivered, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Queued edit was not uploaded')), 1500)
+      })])
+    } finally {
+      clearTimeout(timer)
+    }
+    assert.equal(posts, 3)
+    assert.deepEqual(shown, ['Original', 'Latest version'])
+  } finally {
+    session.leave()
+  }
+})
+
 test('issue #129 & #130：设置快照只走 Discussion，仓库里不留任何设置文件', () => {
   const {
     SYNCED_SETTINGS,

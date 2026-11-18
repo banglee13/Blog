@@ -135,6 +135,8 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
    */
   let baselineBlocks: LanBlock[] = []
   let pendingText: string | null = null
+  let sending = false
+  let retryBatch: { text: string; ops: LanOp[]; baseline: LanBlock[] } | null = null
   let remoteChangedWhileTyping = false
   let status: LanStatus = 'idle'
   let joined = false
@@ -186,35 +188,31 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
   }
 
   const pushNow = async () => {
-    if (closed || !joined) return
-    const text = pendingText ?? baseline
-    pendingText = null
-    if (text === baseline || (pendingText === null && text === baseline)) {
+    if (closed || !joined || sending || retryTimer) return
+    sending = true
+    try {
+      while (!closed && joined && (retryBatch || pendingText !== null)) {
+        if (!retryBatch) {
+          const text = pendingText!
+          pendingText = null
+          const plan = planLocalChange(baselineBlocks, text, name)
+          retryBatch = { text, ops: [...plan.puts, ...plan.dels], baseline: plan.blocks }
+        }
+        const batch = retryBatch
+        if (batch.ops.length && !await sendOps(bumpVersions(batch.ops))) return
+        if (closed) return
+        retryBatch = null
+        baseline = batch.text
+        baselineBlocks = batch.baseline
+      }
       if (remoteChangedWhileTyping) {
         remoteChangedWhileTyping = false
         emitText([], name)
       }
-      return
+      if (!closed) setStatus('online')
+    } finally {
+      sending = false
     }
-    const plan = planLocalChange(baselineBlocks, text, name)
-    const ops = bumpVersions([...plan.puts, ...plan.dels])
-    if (ops.length === 0) {
-      // 本地只是空白 / 空行差异，段落内容没变：本地吸收，不打扰中心
-      baseline = text
-      if (remoteChangedWhileTyping) {
-        remoteChangedWhileTyping = false
-        emitText([], name)
-      }
-      return
-    }
-    const ok = await sendOps(ops)
-    if (!ok) {
-      // 发送失败：留着这份文本，重试成功后再冲一次
-      pendingText = text
-      return
-    }
-    // 基线段落表要跟上，否则下一次差异比对会把已发的改动再发一遍
-    baselineBlocks = blocks.map((block) => ({ ...block }))
   }
 
   /** 段落表里所有存活段落 → 全量 put（顺序与文档一致） */
@@ -237,10 +235,9 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
         method: 'POST',
         body: { room, name, ops },
       })
-      adopt(state)
-      remoteChangedWhileTyping = false
-      setStatus('online')
-      emitText([], name)
+      if (closed) return false
+      if (state.rev >= rev) adopt(state)
+      remoteChangedWhileTyping = true
       return true
     } catch (err) {
       setStatus('retrying', err instanceof Error ? err.message : '上行失败')
@@ -255,10 +252,17 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
       retryTimer = null
       void (async () => {
         try {
+          if (!joined) {
+            await join()
+            return
+          }
           await refresh()
-          setStatus('online')
+          if (closed) return
+          if (retryBatch || pendingText !== null) await pushNow()
+          else setStatus('online')
         } catch {
           setStatus('offline')
+          scheduleRetry()
         }
       })()
     }, retryMs)
@@ -266,8 +270,10 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
 
   const refresh = async () => {
     const state = await transport.request<LanDocState>(`/api/state?room=${encodeURIComponent(room)}&name=${encodeURIComponent(name)}`)
-    adopt(state)
-    emitText([], state.peers.find((peer) => peer.name !== name)?.name ?? name)
+    if (closed) return
+    if (state.rev >= rev) adopt(state)
+    if (retryBatch || pendingText !== null || sending) remoteChangedWhileTyping = true
+    else emitText([], state.peers.find((peer) => peer.name !== name)?.name ?? name)
   }
 
   const onEvent = (event: LanEvent) => {
@@ -278,8 +284,8 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
     if (ops.length === 0) return
     const result = applyRemoteOps(blocks, ops)
     blocks = result.blocks
-    if (typeof event.rev === 'number') rev = event.rev
-    if (pendingText !== null || (quietTimer !== null && blocksToText(blocks) !== baseline)) {
+    if (typeof event.rev === 'number') rev = Math.max(rev, event.rev)
+    if (pendingText !== null || retryBatch || sending) {
       // 正在输入：先记下「中心有新东西」，等本轮输入结束再合并，避免光标乱跳
       remoteChangedWhileTyping = true
       return
@@ -287,33 +293,7 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
     emitText(result.conflicts, event.by ?? '')
   }
 
-  return {
-    seed(text) {
-      // 只用于「进房间前先把本地内容摆好」：直接按段落建表，不动中心
-      blocks = textToBlocks(text, name)
-      baseline = blocksToText(blocks)
-      baselineBlocks = blocks.map((block) => ({ ...block }))
-      pendingText = null
-    },
-    pushLocalText(text) {
-      if (closed) return
-      if (text === baseline && !remoteChangedWhileTyping) return
-      pendingText = text
-      schedule(() => {
-        void pushNow()
-      }, quietMs)
-    },
-    async pushEverything() {
-      if (joined) await sendOps(opsForAll())
-    },
-    async flush() {
-      if (quietTimer) {
-        clearTimeout(quietTimer)
-        quietTimer = null
-      }
-      await pushNow()
-    },
-    async join() {
+  async function join() {
       closed = false
       setStatus('connecting')
       try {
@@ -324,13 +304,15 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
           method: 'POST',
           body: { room, name },
         })
+        if (closed) return
         adopt(state)
         joined = true
         setStatus('online')
         const remoteText = blocksToText(blocks)
         if (!remoteText && localSnapshot.length) {
           // 房间还是空的：把本地这份整篇交出去当初始内容（差异比对在这里派不上用场）
-          await sendOps(opsForAll(localSnapshot))
+          retryBatch = { text: baseline, ops: opsForAll(localSnapshot), baseline: localSnapshot }
+          await pushNow()
         } else if (remoteText) {
           pendingText = null
           emitText([], name)
@@ -341,7 +323,31 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
         setStatus('offline', err instanceof Error ? err.message : '无法连接局域网中心')
         scheduleRetry()
       }
+  }
+  return {
+    seed(text) {
+      blocks = textToBlocks(text, name)
+      baseline = blocksToText(blocks)
+      baselineBlocks = blocks.map((block) => ({ ...block }))
+      pendingText = null
     },
+    pushLocalText(text) {
+      if (closed) return
+      if (text === baseline && !retryBatch && pendingText === null && !remoteChangedWhileTyping) return
+      pendingText = text
+      schedule(() => { void pushNow() }, quietMs)
+    },
+    async pushEverything() {
+      if (!joined || retryBatch) return
+      retryBatch = { text: baseline, ops: opsForAll(), baseline: baselineBlocks }
+      await pushNow()
+    },
+    async flush() {
+      if (quietTimer) clearTimeout(quietTimer)
+      quietTimer = null
+      await pushNow()
+    },
+    join,
     leave() {
       closed = true
       joined = false
@@ -350,6 +356,7 @@ export function createLanSession(options: LanSessionOptions, transport: LanTrans
       quietTimer = null
       retryTimer = null
       pendingText = null
+      retryBatch = null
       unsubscribe?.()
       unsubscribe = null
       setStatus('idle')
