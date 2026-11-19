@@ -325,22 +325,67 @@ export function getPublishTime(post: Post): number | null {
 /*                                  聚合查询                                   */
 /* -------------------------------------------------------------------------- */
 
-export function getRepoPosts(): Post[] {
+/**
+ * 仓库文章的解析缓存（issue #128：页面加载与跳转提速）。
+ *
+ * `rawModules` 是构建期内联进产物的常量，运行期不会变；离线版唯一能让「内置文章集合」
+ * 变化的是本机隐藏记录，所以缓存键取隐藏 slug 列表（线上版恒为空串）。
+ * 缓存的是同一个数组引用：调用方不得原地修改返回值（排序 / 过滤请先复制）。
+ */
+let repoPostsCache: Post[] | null = null
+let repoPostsCacheKey = '\u0000uninitialized'
+let repoPostsBySlug: Map<string, Post> | null = null
+
+function computeRepoPosts(): Post[] {
   const posts = Object.entries(rawModules).map(([path, raw]) =>
     buildPost(raw, { path: path.replace(/^\//, ''), source: 'repo' }),
   )
   if (!OFFLINE) return posts
   // 离线版：内置文章是写死在 HTML 里的，删不掉，只能记住「本机已隐藏」并把它过滤掉。
   // 想真的从仓库消失，请到线上站点删除——离线文件不联网，也不会替用户提交任何改动。
-  const hidden = hiddenSeedSlugs()
-  if (hidden.length === 0) return posts
-  return posts.filter((post) => !hidden.includes(post.slug))
+  const hidden = new Set(hiddenSeedSlugs())
+  if (hidden.size === 0) return posts
+  return posts.filter((post) => !hidden.has(post.slug))
+}
+
+/** 仓库文章缓存键：线上版构建期内联的文章不会变，恒为空串；离线版只随本机隐藏记录变化。 */
+function repoPostsKey(): string {
+  return OFFLINE ? hiddenSeedSlugs().join('|') : ''
+}
+
+export function getRepoPosts(): Post[] {
+  // 每篇文章都要跑一遍 frontmatter 解析 + 去标记 + 字数统计 + 摘要截取，
+  // 以前每次调用都重算：切一页、开一次搜索框都会把整站文章重新解析一遍（issue #128）。
+  const key = repoPostsKey()
+  if (repoPostsCache && repoPostsCacheKey === key) return repoPostsCache
+  repoPostsCache = computeRepoPosts()
+  repoPostsCacheKey = key
+  repoPostsBySlug = new Map(repoPostsCache.map((post) => [post.slug, post]))
+  return repoPostsCache
+}
+
+/** 按 slug 取仓库文章（走缓存索引，不再线性扫描整份文章表）。 */
+export function getRepoPostBySlug(slug: string): Post | undefined {
+  if (repoPostsBySlug && repoPostsCacheKey === repoPostsKey()) {
+    return repoPostsBySlug.get(slug)
+  }
+  return getRepoPosts().find((p) => p.slug === slug)
+}
+
+/** 本地草稿原文指纹：决定聚合缓存是否失效（比解析整份草稿列表便宜得多）。 */
+function draftsSignature(): string {
+  if (typeof localStorage === 'undefined') return ''
+  try {
+    return localStorage.getItem(STORAGE_KEYS.drafts) || '[]'
+  } catch {
+    return ''
+  }
 }
 
 /** 指定 slug 对应的仓库加密文章（不存在则返回 undefined）。
  *  用于识别「加密文章的本地草稿」：这类草稿发布时必须重新加密。 */
 export function getEncryptedRepoPost(slug: string): Post | undefined {
-  return getRepoPosts().find((p) => p.slug === slug && p.encryption)
+  return getRepoPostBySlug(slug)?.encryption ? getRepoPostBySlug(slug) : undefined
 }
 
 function sortPosts(posts: Post[]): Post[] {
@@ -353,15 +398,33 @@ function sortPosts(posts: Post[]): Post[] {
 /** 公开聚合：本地草稿与仓库文章同名时，以本地版本为准。
  * 例外：仓库中的加密文章不能被同名的明文本地草稿顶替，
  * 否则公开页面会绕过密码直接显示明文内容。
- * 本地版本自带加密信封时允许覆盖——离线版「重新加密发布」正是这条路径。 */
-export function getAllPosts(): Post[] {
+ * 本地版本自带加密信封时允许覆盖——离线版「重新加密发布」正是这条路径。
+ *
+ * 结果按「仓库文章缓存键 + 本地草稿原文」缓存（issue #128：首页 / 标签页 / 归档 /
+ * 搜索框读的都是同一份列表，没有缓存时每次切换都要把整站文章重新解析并排序一遍）。
+ * 返回的是缓存里的同一个数组引用：调用方要排序或增删请先复制一份。 */
+let aggregateCache: { key: string; all: Post[]; published: Post[] } | null = null
+
+function aggregateKey(): string {
+  return `${repoPostsKey()}\u0000${draftsSignature()}`
+}
+
+function buildAggregate(): { all: Post[]; published: Post[] } {
   const map = new Map<string, Post>()
   for (const p of getRepoPosts()) map.set(p.slug, p)
   for (const p of getLocalPosts()) {
     if (map.get(p.slug)?.encryption && !p.encryption) continue
     map.set(p.slug, p)
   }
-  return sortPosts([...map.values()])
+  const all = sortPosts([...map.values()])
+  return { all, published: all.filter((p) => !p.draft) }
+}
+
+export function getAllPosts(): Post[] {
+  const key = aggregateKey()
+  if (aggregateCache && aggregateCache.key === key) return aggregateCache.all
+  aggregateCache = { key, ...buildAggregate() }
+  return aggregateCache.all
 }
 
 /** 文章管理后台列表：区分草稿和已发布的文章，同名草稿与已发布文章均完整列出 */
@@ -372,7 +435,10 @@ export function getAllAdminPosts(): Post[] {
 }
 
 export function getPublishedPosts(): Post[] {
-  return getAllPosts().filter((p) => !p.draft)
+  const key = aggregateKey()
+  if (aggregateCache && aggregateCache.key === key) return aggregateCache.published
+  aggregateCache = { key, ...buildAggregate() }
+  return aggregateCache.published
 }
 
 export function getPostBySlug(slug: string, source?: Post['source']): Post | undefined {

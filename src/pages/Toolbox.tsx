@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { ArrowUpRight } from 'lucide-react'
+import { OFFLINE } from '../lib/runtime'
 
 export default function Toolbox() {
   return (
@@ -31,6 +32,28 @@ export default function Toolbox() {
             />
           </div>
         </Link>
+        {OFFLINE && (
+          <Link
+            to="/toolbox/lan"
+            className="card group relative flex flex-col justify-between p-6 transition hover:-translate-y-0.5 hover:border-brand-300 dark:hover:border-brand-400/30"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="font-serif text-xl font-semibold tracking-tight text-ink-900 transition group-hover:text-brand-600 dark:text-white dark:group-hover:text-brand-300">
+                  局域网协作
+                </h2>
+                <p className="mt-2 text-sm leading-relaxed text-ink-500 dark:text-ink-400">
+                  同一个局域网里的几台设备共写一份文档：中心是自己机器上的
+                  <span className="font-mono text-[12px]"> scripts/offline-hub.mjs</span>，按段落合并改动，全程不出公网。
+                </p>
+              </div>
+              <ArrowUpRight
+                size={18}
+                className="mt-1 shrink-0 text-ink-400 transition group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-brand-500"
+              />
+            </div>
+          </Link>
+        )}
         <Link to="/toolbox/genshin" className="card group relative flex flex-col justify-between p-6 transition hover:-translate-y-0.5 hover:border-brand-300 dark:hover:border-brand-400/30">
           <div className="flex items-start justify-between gap-4">
             <div>

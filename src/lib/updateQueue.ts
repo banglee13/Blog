@@ -8,7 +8,7 @@
  *   - 删除仓库文章（post-delete）
  *   - 发表申请 PR（post-pr，由无 push 权限的用户提交）
  *   - 上传图片（image-upload，图片本体以 data URL 暂存本地）
- *   - 账号偏好同步（settings-sync，如字体、背景偏好文件）
+ *   - 账号偏好同步（settings-sync）：仅为旧版本遗留条目保留，见 QueueItemKind 的说明
  *   - 历史版本名称（version-name，写入文章旁的 {slug}.versions.json）
  */
 import {
@@ -29,6 +29,10 @@ export type QueueItemKind =
   | 'post-delete'
   | 'post-pr'
   | 'image-upload'
+  /**
+   * 仅用于处理旧版本遗留在队列里的账号偏好条目（issue #130 之后设置不再写仓库文件，
+   * 改由 lib/settingsSync.tsx 自动保存到 GitHub Discussions，所以不再有新的此类条目）。
+   */
   | 'settings-sync'
   | 'version-name'
 
@@ -180,10 +184,6 @@ export function enqueuePostPr(
     markdown,
     renamedFrom: renamedFrom && renamedFrom !== post.slug ? renamedFrom : undefined,
   })
-}
-
-export function enqueueSettingsSync(path: string, title: string, text: string): QueueItem {
-  return enqueueUpdate({ kind: 'settings-sync', title, target: path, text })
 }
 
 /**

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CornerDownLeft, FileText, Search } from 'lucide-react'
 import { excerpt, formatDate, getPublishedPosts, searchPosts } from '../lib/posts'
+import { lockPageScroll } from '../lib/scrollLock'
 
 export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [query, setQuery] = useState('')
@@ -13,17 +14,12 @@ export function SearchDialog({ open, onClose }: { open: boolean; onClose: () => 
   const results = useMemo(() => searchPosts(posts, query).slice(0, 8), [posts, query])
 
   useEffect(() => {
-    if (open) {
-      setQuery('')
-      setActive(0)
-      setTimeout(() => inputRef.current?.focus(), 30)
-      document.body.style.overflow = 'hidden'
-    } else {
-      document.body.style.overflow = ''
-    }
-    return () => {
-      document.body.style.overflow = ''
-    }
+    if (!open) return
+    setQuery('')
+    setActive(0)
+    setTimeout(() => inputRef.current?.focus(), 30)
+    // issue #128：锁滚动统一走引用计数，别处的弹层 / 全屏态不会被顺手解锁
+    return lockPageScroll()
   }, [open])
 
   useEffect(() => setActive(0), [query])

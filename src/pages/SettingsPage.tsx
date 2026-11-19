@@ -6,7 +6,6 @@ import {
   ArrowUp,
   Check,
   CheckCircle2,
-  Cloud,
   CloudRain,
   Columns2,
   Download,
@@ -53,6 +52,8 @@ import {
   type FontTarget,
 } from '../lib/font'
 import { useBackground } from '../lib/background'
+import { SettingsSyncCard } from '../components/SettingsSyncCard'
+import { BackgroundImagePicker } from '../components/BackgroundImagePicker'
 import { useTheme } from '../lib/theme'
 import { COLOR_THEMES } from '../lib/themes'
 import { useToast } from '../components/Toast'
@@ -61,7 +62,7 @@ import { getRepoTarget, setRepoTarget } from '../lib/github'
 import { getLocalPosts, serializePost } from '../lib/posts'
 import { STORAGE_KEYS } from '../lib/config'
 import { clearRememberedPostUnlocks } from '../lib/crypto'
-import { useEditorScrollSync } from '../lib/editorSettings'
+import { useEditorScrollPastEnd, useEditorScrollSync } from '../lib/editorSettings'
 import { OfflineSettingsCard } from '../components/OfflineSettingsCard'
 import { OFFLINE } from '../lib/runtime'
 
@@ -71,6 +72,48 @@ declare global {
   interface Window {
     queryLocalFonts?: () => Promise<LocalFontData[]>
   }
+}
+
+/** 设置页里的一行开关（编辑器分区用，issue #101 / #127 共用同一种外观）。 */
+function SwitchRow({
+  title,
+  desc,
+  value,
+  onChange,
+  onLabel,
+  offLabel,
+}: {
+  title: string
+  desc: string
+  value: boolean
+  onChange: (next: boolean) => void
+  onLabel: string
+  offLabel: string
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-ink-200/80 bg-ink-50/60 p-4 dark:border-white/10 dark:bg-white/[0.025]">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-ink-800 dark:text-ink-100">{title}</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-ink-400 dark:text-ink-500">{desc}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={value}
+        onClick={() => onChange(!value)}
+        title={value ? onLabel : offLabel}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+          value ? 'bg-brand-500' : 'bg-ink-300 dark:bg-white/15'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all duration-150 ${
+            value ? 'left-[1.375rem]' : 'left-0.5'
+          }`}
+        />
+      </button>
+    </div>
+  )
 }
 
 function Section({
@@ -492,32 +535,44 @@ function FontPriorityEditor({
 
 export default function SettingsPage() {
   const { isAuthed, ghUser, canPublish, connectGithub, disconnectGithub, logout } = useAuth()
-  const { font, accountSync, setFontSize, resetFont, saveForGithub } = useFont()
-  const {
-    background,
-    siteLayout,
-    setSiteLayout,
-    accountSync: appearanceAccountSync,
-    setBackground,
-    resetBackground,
-    saveForGithub: saveAppearanceForGithub,
-  } = useBackground()
+  const { font, setFontSize, resetFont } = useFont()
+  const { background, siteLayout, setSiteLayout, setBackground, resetBackground } = useBackground()
   const animatedBackground = useAnimatedBackground()
   const toast = useToast()
   const [editorScrollSync, setEditorScrollSync] = useEditorScrollSync()
+  const [editorScrollPastEnd, setEditorScrollPastEnd] = useEditorScrollPastEnd()
 
   const [repo, setRepo] = useState(getRepoTarget())
   const [localFonts, setLocalFonts] = useState<string[]>([])
   const [loadingFonts, setLoadingFonts] = useState(false)
-  const [savingFont, setSavingFont] = useState(false)
   const [backgroundColor, setBackgroundColor] = useState(background.color || '#FBFBFD')
   const [backgroundIntensity, setBackgroundIntensity] = useState(background.intensity)
-  const [savingAppearance, setSavingAppearance] = useState(false)
 
   useEffect(() => {
     setBackgroundColor(background.color || '#FBFBFD')
     setBackgroundIntensity(background.intensity)
   }, [background.color, background.intensity])
+
+  const editorSwitches = [
+    {
+      name: 'scrollSync',
+      title: '双栏自动同步滚动',
+      desc: '开启后，编辑区滚动时预览区会跟随到对应内容位置；关闭后两侧各自独立滚动。',
+      value: editorScrollSync,
+      onChange: setEditorScrollSync,
+      onLabel: '点击关闭自动同步',
+      offLabel: '点击开启自动同步',
+    },
+    {
+      name: 'scrollPastEnd',
+      title: '编辑区末尾留白',
+      desc: '允许一直往下滚，把最后一行顶到编辑区最上方；写长文时可以随时把正在改的那一段放到屏幕中间。',
+      value: editorScrollPastEnd,
+      onChange: setEditorScrollPastEnd,
+      onLabel: '点击关闭末尾留白',
+      offLabel: '点击开启末尾留白',
+    },
+  ]
 
   const saveRepo = () => {
     setRepoTarget(repo)
@@ -549,21 +604,6 @@ export default function SettingsPage() {
     }
   }
 
-  const saveFontToGithub = async () => {
-    setSavingFont(true)
-    try {
-      await saveForGithub()
-      toast(`字体与字号偏好已加入待更新队列，统一更新后同步到 @${ghUser?.login}`, 'success', {
-        label: '查看队列',
-        href: '/admin?tab=queue',
-      })
-    } catch (err) {
-      toast(err instanceof Error ? err.message : '保存字体偏好失败', 'error')
-    } finally {
-      setSavingFont(false)
-    }
-  }
-
   const applyBackground = () => {
     try {
       const next = setBackground(backgroundColor, backgroundIntensity)
@@ -572,21 +612,6 @@ export default function SettingsPage() {
       toast(`已应用渐变背景 ${next.color || '系统默认'} · 明显度 ${next.intensity}%`, 'success')
     } catch (err) {
       toast(err instanceof Error ? err.message : '背景颜色格式无效', 'error')
-    }
-  }
-
-  const saveAppearanceToGithub = async () => {
-    setSavingAppearance(true)
-    try {
-      await saveAppearanceForGithub()
-      toast(`外观偏好已加入待更新队列，统一更新后同步到 @${ghUser?.login}`, 'success', {
-        label: '查看队列',
-        href: '/admin?tab=queue',
-      })
-    } catch (err) {
-      toast(err instanceof Error ? err.message : '保存外观偏好失败', 'error')
-    } finally {
-      setSavingAppearance(false)
     }
   }
 
@@ -765,34 +790,11 @@ export default function SettingsPage() {
             </span>
           </div>
 
-          {canPublish && ghUser ? (
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-ink-200/70 pt-4 dark:border-white/10">
-              <button
-                type="button"
-                onClick={saveFontToGithub}
-                disabled={savingFont}
-                className="btn-outline h-9"
-              >
-                {savingFont ? <Loader2 size={15} className="animate-spin" /> : <Cloud size={15} />}
-                保存到 GitHub 账号（@{ghUser.login}）
-              </button>
-              <span className="text-xs text-ink-400">
-                {accountSync === 'loading'
-                  ? '正在同步账号字体与字号偏好…'
-                  : accountSync === 'queued'
-                    ? '已加入待更新队列，统一更新后同步到账号'
-                    : accountSync === 'synced'
-                      ? '字体与字号已与 GitHub 账号同步'
-                      : '保存后可在多台设备登录同一账号自动恢复'}
-              </span>
-            </div>
-          ) : (
-            <p className="mt-4 border-t border-ink-200/70 pt-4 text-xs leading-relaxed text-ink-400 dark:border-white/10">
+          <p className="mt-4 border-t border-ink-200/70 pt-4 text-xs leading-relaxed text-ink-400 dark:border-white/10">
               {OFFLINE
                 ? '离线版只使用本机已安装的字体（不会请求云端字体）；本机没有的字体名会按默认字体栈显示。'
-                : '访客设置已直接生效并保存在本地。登录 GitHub 账号后还可将字体与字号偏好同步至云端。'}
+                : '字体与字号属于账号同步的偏好，改完会自动保存到 GitHub 账号，详见下方「账号设置同步」。'}
             </p>
-          )}
         </Section>
 
         {/* ------------------------------ 背景颜色与强化渐变 ------------------------------ */}
@@ -882,6 +884,9 @@ export default function SettingsPage() {
               恢复默认
             </button>
           </div>
+
+          {/* issue #126：固定背景图（仓库图片 / 本机图片 / 自定义地址） */}
+          <BackgroundImagePicker />
         </Section>
 
         {/* ------------------------------ 动态背景 ------------------------------ */}
@@ -893,80 +898,19 @@ export default function SettingsPage() {
           <AnimatedBackgroundControls pref={animatedBackground} />
         </Section>
 
-        {/* ------------------------------ 外观偏好同步 ------------------------------ */}
-        {!OFFLINE && (
-          <Section
-          title="外观偏好同步"
-          desc="把站点外观、配色主题、明暗模式与背景一起保存到 GitHub 账号；在其他设备登录同一账号后会读取并恢复。"
-          icon={Cloud}
-        >
-          {canPublish && ghUser ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={saveAppearanceToGithub}
-                disabled={savingAppearance}
-                className="btn-outline h-9"
-              >
-                {savingAppearance ? <Loader2 size={15} className="animate-spin" /> : <Cloud size={15} />}
-                同步外观到 GitHub（@{ghUser.login}）
-              </button>
-              <span className="text-xs text-ink-400">
-                {appearanceAccountSync === 'loading'
-                  ? '正在恢复账号外观偏好…'
-                  : appearanceAccountSync === 'queued'
-                    ? '已加入待更新队列，统一更新后同步到账号'
-                    : appearanceAccountSync === 'synced'
-                      ? '已与该账号的外观偏好同步'
-                      : '保存后可在其他设备登录同一账号自动恢复'}
-              </span>
-            </div>
-          ) : (
-            <p className="text-xs leading-relaxed text-ink-400">
-              {OFFLINE
-                ? '离线版的外观偏好只保存在本机（这个文件不联网，也就没有账号同步）。'
-                : '访客设置已直接保存在本地。登录并连接 GitHub 账号后，可在这里把外观偏好同步到云端。'}
-            </p>
-          )}
-          <p className="mt-3 text-xs leading-relaxed text-ink-400">
-            偏好保存在仓库的 <code className="font-mono">.starlog/settings/background-preferences/</code> 下，每个 GitHub 账号一个文件，不会影响文章与站点其他人的设置。
-          </p>
-        </Section>
-        )}
+        {/* --------------------------- 账号设置同步（issue #129 / #130） --------------------------- */}
+        {!OFFLINE && <SettingsSyncCard onCleanLegacyError={(message) => toast(message, 'error')} />}
 
         {/* ------------------------------ 编辑器行为 ----------------------------- */}
         <Section
           title="编辑器"
-          desc="调整双栏编辑器的工作方式，设置即时生效并自动保存到当前浏览器。"
+          desc="调整双栏编辑器的工作方式。设置即时生效，并随账号设置一起自动同步。"
           icon={Columns2}
         >
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-ink-200/80 bg-ink-50/60 p-4 dark:border-white/10 dark:bg-white/[0.025]">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-ink-800 dark:text-ink-100">
-                双栏自动同步滚动
-              </p>
-              <p className="mt-0.5 text-xs leading-relaxed text-ink-400 dark:text-ink-500">
-                开启后，编辑区滚动时预览区会跟随到对应内容位置；关闭后两侧各自独立滚动。
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={editorScrollSync}
-              onClick={() => setEditorScrollSync(!editorScrollSync)}
-              title={editorScrollSync ? '点击关闭自动同步' : '点击开启自动同步'}
-              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                editorScrollSync
-                  ? 'bg-brand-500'
-                  : 'bg-ink-300 dark:bg-white/15'
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all duration-150 ${
-                  editorScrollSync ? 'left-[1.375rem]' : 'left-0.5'
-                }`}
-              />
-            </button>
+          <div className="space-y-2.5">
+            {editorSwitches.map((item) => (
+              <SwitchRow key={item.name} {...item} />
+            ))}
           </div>
           <p className="mt-2.5 text-xs leading-relaxed text-ink-400">
             全屏编辑时可按 <kbd className="rounded border border-ink-200 px-1 font-mono text-[10px] dark:border-white/15">Esc</kbd> 或点击右上角按钮退出。

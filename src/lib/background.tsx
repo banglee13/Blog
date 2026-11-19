@@ -2,15 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react'
 import { STORAGE_KEYS } from './config'
 import { readPersonalSetting, writePersonalSetting } from './settingsStore'
-import { fetchGithubBackgroundPreference, buildBackgroundPreferenceFile, backgroundSettingsPath, type SiteLayoutPreference } from './github'
-import { enqueueSettingsSync, getUpdateQueue } from './updateQueue'
-import { useAuth } from './auth'
-import { useTheme } from './theme'
-import {
-  setAnimatedBackgroundPreference,
-  useAnimatedBackground,
-  type AnimatedBackgroundPreference,
-} from './animatedBackground'
+import type { SiteLayoutPreference } from './github'
 
 export interface BackgroundPreference {
   color: string
@@ -19,16 +11,12 @@ export interface BackgroundPreference {
   updatedAt: number
 }
 
-type AccountSync = 'idle' | 'loading' | 'synced' | 'queued' | 'error'
-
 interface BackgroundCtx {
   background: BackgroundPreference
   siteLayout: SiteLayoutPreference
   setSiteLayout: (layout: SiteLayoutPreference) => void
-  accountSync: AccountSync
   setBackground: (color: string, intensity?: number) => BackgroundPreference
   resetBackground: () => void
-  saveForGithub: () => Promise<void>
 }
 
 const DEFAULT_INTENSITY = 50
@@ -37,10 +25,8 @@ const Ctx = createContext<BackgroundCtx>({
   background: DEFAULT_BACKGROUND,
   siteLayout: 'classic',
   setSiteLayout: () => {},
-  accountSync: 'idle',
   setBackground: () => DEFAULT_BACKGROUND,
   resetBackground: () => {},
-  saveForGithub: async () => {},
 })
 
 export function normalizeBackgroundColor(value: string): string {
@@ -159,53 +145,20 @@ function readLocal(): BackgroundPreference {
 }
 
 /**
- * 账号外观缓存：除了旧的渐变背景色，还记住配色主题、明暗模式与动态背景，
- * 这样刚登录、远端文件还没读完时也能先恢复上一台设备的样子。
+ * 渐变背景色的提供者。
+ *
+ * 只做「本机偏好 ↔ 文档变量」两件事：配色主题、明暗模式、背景色与背景图、动态背景的
+ * 云端保存与恢复统一在 lib/settingsSync.tsx（issue #129 / #130），这里不再各自实现一遍。
  */
-interface AccountAppearanceCache {
-  color?: string
-  intensity?: number
-  updatedAt?: number
-  colorTheme?: string
-  mode?: string
-  animated?: AnimatedBackgroundPreference
-  siteLayout?: SiteLayoutPreference
-}
-
-function readAccountCache(): Record<string, AccountAppearanceCache> {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS.backgroundAccounts) || '{}')
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function writeAccountCache(login: string, appearance: AccountAppearanceCache) {
-  const cache = readAccountCache()
-  cache[login] = appearance
-  localStorage.setItem(STORAGE_KEYS.backgroundAccounts, JSON.stringify(cache))
-}
-
-function isThemeMode(value: unknown): value is 'light' | 'dark' | 'system' {
-  return value === 'light' || value === 'dark' || value === 'system'
-}
-
 function readSiteLayout(): SiteLayoutPreference {
   return readPersonalSetting('siteLayout') === 'galaxy' ? 'galaxy' : 'classic'
 }
 
 export function BackgroundProvider({ children }: { children: ReactNode }) {
-  const { ghUser, canPublish, loading: authLoading } = useAuth()
-  // 配色主题与动态背景也属于「账号外观」，由这里一起恢复 / 保存到同一份 GitHub 偏好文件。
-  const { colorTheme, mode, setColorTheme, setMode } = useTheme()
-  const animatedBackground = useAnimatedBackground()
   const [background, setBackgroundState] = useState<BackgroundPreference>(readLocal)
   const [siteLayout, setSiteLayoutState] = useState(readSiteLayout)
   const layoutRevision = useRef(0)
   const backgroundRef = useRef(background)
-  const [accountSync, setAccountSync] = useState<AccountSync>('idle')
-  const accountRef = useRef('')
 
   const applySiteLayout = useCallback((layout: SiteLayoutPreference) => {
     writePersonalSetting('siteLayout', layout)
@@ -239,8 +192,7 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     commit({ ...DEFAULT_BACKGROUND, updatedAt: Date.now() })
   }, [commit])
 
-  // Browser-store updates are immediately visible in other tabs and views.
-  // to other mounted views and other tabs without a repository write.
+  // 同一页面里的其它视图与其他标签页立刻看到改动（settingsSync 写入远端后也是走这里）.
   useEffect(() => {
     const sync = (event: Event) => {
       const field = (event as CustomEvent<{ name?: string }>).detail?.name
@@ -264,119 +216,9 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     applyToDocument(background.color, background.intensity)
   }, [])
 
-  useEffect(() => {
-    if (authLoading || !ghUser) {
-      accountRef.current = ''
-      if (!authLoading) setAccountSync('idle')
-      return
-    }
-
-    const login = ghUser.login
-    if (accountRef.current === login) return
-    accountRef.current = login
-    let active = true
-    const initialLayoutRevision = layoutRevision.current
-    setAccountSync('loading')
-
-    const restore = async () => {
-      try {
-        const cached = readAccountCache()[login]
-        if (cached) {
-          if (typeof cached.color === 'string') {
-            setBackground(cached.color, typeof cached.intensity === 'number' ? cached.intensity : DEFAULT_INTENSITY)
-          }
-          if (cached.colorTheme) setColorTheme(cached.colorTheme)
-          if (isThemeMode(cached.mode)) setMode(cached.mode)
-          if (cached.animated) setAnimatedBackgroundPreference(cached.animated)
-          if (cached.siteLayout === 'classic' || cached.siteLayout === 'galaxy') applySiteLayout(cached.siteLayout)
-        }
-
-        // 有尚未更新到仓库的偏好更改时，不用旧的远程版本覆盖本地/队列中的新设置。
-        const hasPending = getUpdateQueue().some(
-          (item) => item.kind === 'settings-sync' && item.target === backgroundSettingsPath(login),
-        )
-        if (hasPending) {
-          if (active) setAccountSync('queued')
-          return
-        }
-
-        const remote = await fetchGithubBackgroundPreference(login)
-        if (!active) return
-        if (getUpdateQueue().some((item) => item.kind === 'settings-sync' && item.target === backgroundSettingsPath(login))) {
-          setAccountSync('queued')
-          return
-        }
-        if (remote) {
-          setBackground(remote.color, remote.intensity)
-          if (!active) return
-          if (remote.colorTheme) setColorTheme(remote.colorTheme)
-          if (isThemeMode(remote.themeMode)) setMode(remote.themeMode)
-          if (remote.animatedBackground) setAnimatedBackgroundPreference(remote.animatedBackground)
-          // A choice made while the account is loading takes effect immediately.
-          if (remote.siteLayout && layoutRevision.current === initialLayoutRevision) {
-            applySiteLayout(remote.siteLayout)
-          }
-          writeAccountCache(login, {
-            color: remote.color,
-            intensity: remote.intensity,
-            updatedAt: remote.updatedAt,
-            colorTheme: remote.colorTheme,
-            mode: remote.themeMode,
-            siteLayout: remote.siteLayout,
-            animated: remote.animatedBackground
-              ? {
-                  scene: remote.animatedBackground.scene as AnimatedBackgroundPreference['scene'],
-                  values: remote.animatedBackground.values as AnimatedBackgroundPreference['values'],
-                }
-              : undefined,
-          })
-        }
-        setAccountSync('synced')
-      } catch {
-        if (active) setAccountSync('error')
-      }
-    }
-
-    void restore()
-    return () => {
-      active = false
-    }
-  }, [authLoading, canPublish, ghUser, setBackground, setColorTheme, setMode, applySiteLayout])
-
-  const saveForGithub = useCallback(async () => {
-    if (!canPublish || !ghUser) throw new Error('请先登录并连接具备 Contents 写入权限的 GitHub 账号')
-    // 更新仓库的操作先加入待更新队列，由内容管理统一更新。
-    // 站点外观、配色主题、明暗模式与背景写在同一份账号外观偏好里。
-    const file = buildBackgroundPreferenceFile(ghUser.login, {
-      color: background.color,
-      intensity: background.intensity,
-      colorTheme,
-      themeMode: mode,
-      siteLayout,
-      animatedBackground: {
-        scene: animatedBackground.scene,
-        values: animatedBackground.values as Record<string, Record<string, number>>,
-      },
-      updatedAt: Date.now(),
-    })
-    enqueueSettingsSync(
-      file.path,
-      `同步 @${ghUser.login} 的站点外观、配色主题与背景`,
-      file.text,
-    )
-    writeAccountCache(ghUser.login, {
-      ...background,
-      colorTheme,
-      mode,
-      siteLayout,
-      animated: animatedBackground,
-    })
-    setAccountSync('queued')
-  }, [background, canPublish, ghUser, colorTheme, mode, animatedBackground, siteLayout])
-
   const value = useMemo(
-    () => ({ background, siteLayout, setSiteLayout, accountSync, setBackground, resetBackground, saveForGithub }),
-    [background, siteLayout, setSiteLayout, accountSync, setBackground, resetBackground, saveForGithub],
+    () => ({ background, siteLayout, setSiteLayout, setBackground, resetBackground }),
+    [background, siteLayout, setSiteLayout, setBackground, resetBackground],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

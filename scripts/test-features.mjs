@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { get as httpRequest } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -996,6 +997,7 @@ test('百宝箱与全屏极简回声洞（#93）：顶栏页签、用户背景�
       '.png': 'dataurl',
       '.svg': 'dataurl',
       '.md': 'text',
+      '.css': 'empty',
     },
     define: {
       'process.env.NODE_ENV': '"production"',
@@ -1672,6 +1674,7 @@ test('双栏编辑器滚动同步引擎（#101）：全层级源码行区间标�
       '.png': 'dataurl',
       '.svg': 'dataurl',
       '.md': 'text',
+      '.css': 'empty',
     },
     define: {
       'process.env.NODE_ENV': '"production"',
@@ -1924,6 +1927,7 @@ test('双栏编辑器真实 DOM 双向联动交互（#101）：浏览右侧同�
       '.png': 'dataurl',
       '.svg': 'dataurl',
       '.md': 'text',
+      '.css': 'empty',
     },
     define: {
       'process.env.NODE_ENV': '"production"',
@@ -2837,3 +2841,834 @@ test('issue #106 & offline CI：首页下滑自动加载更多 + main 更新自�
 
 
 
+
+/* -------------------------------------------------------------------------- */
+/*  issue #126 / #127 / #128 / #129 / #130 / #112：本轮新增模块的行为与约定      */
+/* -------------------------------------------------------------------------- */
+
+const settingsSnapshotMod = await importTsModule('src/lib/settingsSnapshot.ts')
+const backgroundImageMod = await importTsModule('src/lib/backgroundImage.ts')
+const scrollSyncMod = await importTsModule('src/lib/scrollSync.ts')
+const scrollLockMod = await importTsModule('src/lib/scrollLock.ts')
+const lanDocMod = await importTsModule('src/lib/lanDoc.ts')
+const lanSyncMod = await importTsModule('src/lib/lanSync.ts')
+const lanHubMod = await import(new URL('./offline-hub.mjs', import.meta.url))
+
+test('account settings preserve independent device edits and round-trip site layout', () => {
+  const { collectSyncedSettings, mergeSettingsForSave, mergeRemoteSettings, parseSettingsDiscussionBody, renderSettingsDiscussionBody } = settingsSnapshotMod
+  const remote = {
+    version: 2, login: 'reader', updatedAt: 200,
+    values: { themeMode: 'dark', siteLayout: 'galaxy' },
+    stamps: { themeMode: 150, siteLayout: 120 },
+  }
+  const local = {
+    version: 2, login: 'reader', updatedAt: 300,
+    values: collectSyncedSettings({ colorTheme: 'ocean', themeMode: 'light', siteLayout: 'classic' }).values,
+    stamps: { colorTheme: 280, themeMode: 20, siteLayout: 30 },
+  }
+  assert.equal(local.values.siteLayout, 'classic')
+  const merged = mergeSettingsForSave(local, remote)
+  const parsed = parseSettingsDiscussionBody(renderSettingsDiscussionBody('reader', merged), 'reader')
+  assert.deepEqual(parsed.values, { themeMode: 'dark', siteLayout: 'galaxy', colorTheme: 'ocean' })
+  assert.deepEqual(parsed.stamps, { themeMode: 150, siteLayout: 120, colorTheme: 280 })
+  const restored = mergeRemoteSettings({
+    remote: parsed.values, remoteUpdatedAt: 0, remoteStamps: parsed.stamps, localStamps: { themeMode: 170 },
+  })
+  assert.deepEqual(restored.keepLocal, ['themeMode'])
+  assert.equal(restored.apply.siteLayout, 'galaxy')
+})
+
+test('LAN collaboration retries unconfirmed edits before replacing local text', async () => {
+  const { createLanSession } = lanSyncMod
+  const { textToBlocks, applyRemoteOps } = lanDocMod
+  let state = { blocks: textToBlocks('Original', 'peer'), rev: 1, peers: [] }
+  let posts = 0
+  const shown = []
+  let finish
+  const delivered = new Promise((resolve) => { finish = resolve })
+  const session = createLanSession({
+    room: 'retry', name: 'writer', retryMs: 10, quietMs: 1000,
+    handlers: {
+      onPeers() {},
+      onStatus() {},
+      onText(text) {
+        shown.push(text)
+        if (text.includes('Latest version')) finish()
+      },
+    },
+  }, {
+    async request(route, options) {
+      if (route === '/api/ops') {
+        posts++
+        if (posts === 1) throw new Error('Disconnected')
+        state = { ...state, rev: state.rev + 1, blocks: applyRemoteOps(state.blocks, options.body.ops).blocks }
+      }
+      return state
+    },
+    subscribe() { return () => {} },
+  })
+  try {
+    await session.join()
+    session.pushLocalText('First version')
+    await session.flush()
+    session.pushLocalText('Latest version')
+    let timer
+    try {
+      await Promise.race([delivered, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Queued edit was not uploaded')), 1500)
+      })])
+    } finally {
+      clearTimeout(timer)
+    }
+    assert.equal(posts, 3)
+    assert.deepEqual(shown, ['Original', 'Latest version'])
+  } finally {
+    session.leave()
+  }
+})
+
+test('issue #129 & #130：设置快照只走 Discussion，仓库里不留任何设置文件', () => {
+  const {
+    SYNCED_SETTINGS,
+    collectSyncedSettings,
+    mergeRemoteSettings,
+    parseSettingsDiscussionBody,
+    renderSettingsDiscussionBody,
+    settingsDiscussionMarker,
+    settingsDiscussionTitle,
+    SETTINGS_VALUE_LIMIT,
+    syncedSettingLabel,
+    measureChars,
+  } = settingsSnapshotMod
+
+  // 白名单：需求里点名的「颜色 / 字号」必须在内，凭据与本地数据必须在门外
+  const names = SYNCED_SETTINGS.map((spec) => spec.name)
+  for (const required of ['font', 'background', 'backgroundImage', 'colorTheme', 'themeMode', 'animatedBackground', 'repository']) {
+    assert.ok(names.includes(required), `${required} 应当参与云同步`)
+  }
+  // token / 草稿 / 本机文章这些绝不能上传；editorLineNumbers 是撤掉的功能，白名单里也不该留空位
+  for (const forbidden of ['token', 'gh-token', 'drafts', 'local-posts', 'update-queue', 'offlineBundle', 'editorLineNumbers']) {
+    assert.ok(!names.includes(forbidden), `${forbidden} 绝不能被同步`)
+  }
+  assert.equal(syncedSettingLabel('colorTheme'), '配色主题')
+
+  // 收集：合法值进快照，过大 / 非法值只留本机并给出原因
+  const huge = 'x'.repeat(SETTINGS_VALUE_LIMIT + 10)
+  const collected = collectSyncedSettings({
+    colorTheme: 'sakura',
+    font: { families: ['Noto Sans SC'], sizePercent: 105 },
+    backgroundImage: { enabled: true, url: huge, fit: 'cover', dim: 20, fixed: true },
+    themeMode: 'nonsense',
+  })
+  assert.equal(collected.values.colorTheme, 'sakura')
+  assert.equal(collected.values.font.sizePercent, 105)
+  assert.ok(!('backgroundImage' in collected.values), '超限的背景图不应上传')
+  assert.match(collected.skipped.backgroundImage, /仅保存在本机/)
+  assert.match(collected.skipped.themeMode, /不合法/)
+
+  // 渲染 / 解析成环；未知键与非法值在解析时被丢掉
+  const snapshot = { version: 1, login: 'lrbkdgw', updatedAt: 1_700_000_000_000, values: collected.values, skipped: collected.skipped }
+  const body = renderSettingsDiscussionBody('lrbkdgw', snapshot)
+  assert.ok(body.includes(settingsDiscussionMarker('lrbkdgw')), '正文里要有定位标记')
+  assert.equal(settingsDiscussionTitle('lrbkdgw'), '⚙️ @lrbkdgw 的博客设置', '标题要一眼看出是哪个账号的')
+  assert.ok(body.includes('@lrbkdgw') && body.includes('不会写进仓库'), '正文要说明这是谁的设置、存在哪')
+  const parsed = parseSettingsDiscussionBody(body, 'lrbkdgw')
+  assert.ok(parsed, '渲染出的正文必须能解析回来')
+  assert.equal(parsed.values.colorTheme, 'sakura')
+  assert.deepEqual(parsed.skipped, collected.skipped)
+  assert.equal(parsed.updatedAt, snapshot.updatedAt)
+  assert.equal(parseSettingsDiscussionBody(body, 'someone-else'), null, '别人的账号不能认领这条讨论')
+  assert.equal(parseSettingsDiscussionBody('没有代码块的正文', 'lrbkdgw'), null)
+  assert.equal(
+    parseSettingsDiscussionBody('```json\n{"version":1,"login":"lrbkdgw","updatedAt":1,"values":{"colorTheme":"sakura","password":"hunter2"}}\n```', 'lrbkdgw')
+      .values.password,
+    undefined,
+    '白名单外的键不能灌回本地',
+  )
+
+  // 逐条时间戳合并：本机更新过的项保留本机值
+  const merged = mergeRemoteSettings({
+    remote: { colorTheme: 'sakura', font: { sizePercent: 90 } },
+    remoteUpdatedAt: 1000,
+    localStamps: { colorTheme: 1500 },
+  })
+  assert.deepEqual(merged.keepLocal, ['colorTheme'])
+  assert.deepEqual(Object.keys(merged.apply), ['font'])
+  assert.deepEqual(merged.fresh, ['font'])
+
+  // 讨论正文被改坏时按「远端没有设置」处理，绝不半个状态
+  assert.equal(measureChars({ a: 1 }), 7)
+
+  /* ---- 静态约定：仓库里不能再出现设置文件，也不能再有写设置的代码路径 ---- */
+  assert.ok(!existsSync(join(root, '.starlog')), '仓库里不应再保留 .starlog/settings/** 目录')
+  const githubSrc = readFileSync(join(root, 'src/lib/github.ts'), 'utf8')
+  for (const gone of ['saveGithubFontPreference', 'saveGithubBackgroundPreference', 'buildFontPreferenceFile', 'enqueueSettingsSync']) {
+    assert.ok(!githubSrc.includes(gone), `github.ts 里不该再有 ${gone}()`)
+  }
+  assert.ok(githubSrc.includes('createDiscussion'), '快照要靠 Discussion 写入')
+  assert.ok(githubSrc.includes('updateDiscussion'), '已有讨论要就地更新，而不是每次新建')
+  // 读旧文件只允许出现在「迁移」语境里：写入用的 contents API 不该出现在设置代码块中
+  const settingsBlock = githubSrc.slice(githubSrc.indexOf('DISCUSSION_SETTINGS_MARKER') >= 0 ? githubSrc.indexOf('export interface SettingsDiscussion') : githubSrc.indexOf('settingsDiscussionTitle'))
+  assert.ok(!/contents\/.+settings/.test(settingsBlock), '设置相关代码不得拼仓库 contents 路径')
+  const settingsPage = readFileSync(join(root, 'src/pages/SettingsPage.tsx'), 'utf8')
+  assert.ok(settingsPage.includes('SettingsSyncCard'), '设置页要挂载统一的同步卡片')
+  assert.ok(
+    !/保存到 GitHub 账号[\s\S]{0,80}onClick/.test(settingsPage),
+    '各分区里散落的「保存到 GitHub 账号」按钮要删干净',
+  )
+  const updateQueue = readFileSync(join(root, 'src/lib/updateQueue.ts'), 'utf8')
+  assert.ok(!updateQueue.includes('export function enqueueSettingsSync'), '待更新队列不再接收设置类条目')
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+  assert.ok(readme.includes('设置云同步'), 'README 要写清新机制')
+  assert.ok(
+    !/\.starlog\/settings\/(font|background)-preferences\/<login>\.json`，\s*\\?$/.test(readme) &&
+      !readme.includes('统一更新时写入仓库的 `.starlog/settings/'),
+    'README 不能再描述「设置写进仓库」',
+  )
+})
+
+test('issue #126：背景图来源、白名单与铺法偏好', () => {
+  const {
+    BACKGROUND_IMAGE_DIR,
+    buildBackgroundImageChoices,
+    fileNameFromUrl,
+    normalizeBackgroundImage,
+    normalizeBackgroundImageUrl,
+    pickImageEntries,
+    resolveBackgroundImage,
+    DEFAULT_BACKGROUND_IMAGE,
+    LOCAL_BACKGROUND_IMAGE_LIMIT,
+  } = backgroundImageMod
+
+  assert.equal(BACKGROUND_IMAGE_DIR, 'user_upload/background_image', '目录名是 issue #126 点名的路径')
+
+  // 只接受 data:image 与 http(s)，其他一律丢掉
+  assert.equal(normalizeBackgroundImageUrl(' https://cdn.example.com/a.png '), 'https://cdn.example.com/a.png')
+  assert.equal(normalizeBackgroundImageUrl('data:image/png;base64,iVBORw0KGgo='), 'data:image/png;base64,iVBORw0KGgo=')
+  for (const bad of ['', '   ', 'javascript:alert(1)', 'url(https://evil)', '/local/path.png', 'https://a" onclick="x', 'https://a\nx']) {
+    assert.equal(normalizeBackgroundImageUrl(bad), '', `${bad} 不该被接受`)
+  }
+  assert.equal(normalizeBackgroundImageUrl(`data:image/png;base64,${'A'.repeat(LOCAL_BACKGROUND_IMAGE_LIMIT + 1)}`), '', '超限的 data URI 要拒绝')
+
+  // 目录列表 → 可选项：只要图片、按名字排序、label 去掉扩展名
+  const choices = buildBackgroundImageChoices([
+    { name: 'zz-snow.png', type: 'file' },
+    { name: 'README.md', type: 'file' },
+    { name: 'nest', type: 'dir' },
+    { name: 'aa-mist.jpg', type: 'file' },
+  ])
+  assert.deepEqual(choices.map((item) => item.name), ['aa-mist.jpg', 'zz-snow.png'])
+  assert.equal(choices[0].label, 'aa-mist')
+  assert.ok(choices[0].url.includes('/user_upload/background_image/aa-mist.jpg'), '仓库图片要指向 raw 地址下的原路径')
+  assert.deepEqual(pickImageEntries([{ name: 'a.gif' }, { name: 'b.txt' }]), ['a.gif'], 'type 缺省时按扩展名判断')
+
+  // 中文与空格文件名要能被编码，展示名要还原
+  const spaced = buildBackgroundImageChoices([{ name: '夜 色.jpg', type: 'file' }])[0]
+  assert.ok(spaced.url.includes(encodeURIComponent('夜 色.jpg')), '文件名要逐段 encode，避免空格截断')
+  assert.equal(fileNameFromUrl(spaced.url), '夜 色.jpg')
+
+  // 偏好归一化：非法值回默认，enabled 必须有可用地址
+  const pref = normalizeBackgroundImage({ enabled: true, url: 'javascript:alert(1)', fit: 'weird', dim: 999, fixed: 0 })
+  assert.equal(pref.enabled, false, '地址非法时整层不该启用')
+  assert.equal(pref.fit, 'cover')
+  assert.equal(pref.dim, 80)
+  assert.equal(pref.fixed, false)
+  assert.equal(normalizeBackgroundImage(null).enabled, DEFAULT_BACKGROUND_IMAGE.enabled)
+
+  // 站点默认背景：没选过才回退，选过就以读者为准
+  const picked = { ...DEFAULT_BACKGROUND_IMAGE, enabled: true, url: 'data:image/png;base64,AAA=', source: 'local', updatedAt: 5 }
+  assert.equal(resolveBackgroundImage(picked).url, picked.url)
+  const untouched = normalizeBackgroundImage(null)
+  const resolved = resolveBackgroundImage(untouched)
+  assert.equal(resolved.enabled, false, 'config 里没填默认图时保持关闭（githubConfig.defaultBackgroundImage 为空）')
+})
+
+test('issue #127：「末段可滚到顶」的留白算术（行号栏已按站长要求撤掉）', () => {
+  const { computeScrollPastEndPadding, countTextLines, rebuildTextareaLineMirror } = scrollSyncMod
+
+  // 行数口径：状态栏的「N 行」与 textarea 的换行符一致，行尾换行也算一个真实可编辑的空行
+  assert.equal(countTextLines(''), 1)
+  assert.equal(countTextLines('a\nb'), 2)
+  assert.equal(countTextLines('a\nb\n'), 3, '行尾换行是一个真实可编辑的空行')
+  assert.equal(countTextLines('a\r\nb'), 2, 'CRLF 要按一行算')
+
+  // 留白 = 视口高 - 一行行高 - 上内边距；不够长时为 0（不硬撑出空白）
+  assert.equal(computeScrollPastEndPadding(600, 28, 20), 552)
+  assert.equal(computeScrollPastEndPadding(600, 28, 0), 572)
+  assert.equal(computeScrollPastEndPadding(20, 28, 20), 0)
+  assert.equal(computeScrollPastEndPadding(600, 0, 0), 0, '行高度量还没拿到时不加留白')
+
+  /* ---- 静态约定：留白接在 DOM 上，镜像层仍是双栏联动的地基 ---- */
+  const editorSrc = readFileSync(join(root, 'src/pages/Editor.tsx'), 'utf8')
+  assert.ok(editorSrc.includes('computeScrollPastEndPadding'), '尾部留白走同一个算术函数')
+  assert.ok(/paddingBottom/.test(editorSrc), '留白要写到 textarea 的 paddingBottom 上')
+  assert.ok(editorSrc.includes('useEditorScrollPastEnd'), '留白要能在设置里开关')
+  assert.ok(editorSrc.includes('rebuildTextareaLineMirror'), '按行定位仍要靠镜像层（textarea 不暴露行盒）')
+  assert.ok(/const invalidateMirror = useCallback/.test(editorSrc), '要有统一的镜像层作废入口')
+  assert.ok(
+    editorSrc.includes("addEventListener('starlog:settings-changed', invalidateMirror)"),
+    '换字体 / 改字号会改折行，设置变更时要作废重测（否则联动按旧行位置算）',
+  )
+  assert.ok(
+    /mirrorBuiltTextRef\.current = null[\s\S]{0,160}cachedMapperRef\.current = null/.test(editorSrc),
+    '作废要同时清掉镜像层与滚动映射缓存',
+  )
+
+  /* ---- 行号栏要撤干净：半截接线（样式、开关、同步白名单、度量）都不该留下 ---- */
+  // 注释里允许提到旧写法，比对前先剥掉注释
+  const css = readFileSync(join(root, 'src/styles/index.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  for (const token of ['.editor-gutter', '.editor-textarea-with-gutter', 'editor-gutter-line']) {
+    assert.ok(!css.includes(token), `${token} 应随行号栏一起删掉`)
+  }
+  const leftovers = [
+    ['src/pages/Editor.tsx', 'lineNumbers'],
+    ['src/lib/editorSettings.ts', 'editorLineNumbers'],
+    ['src/pages/SettingsPage.tsx', '编辑区显示行号'],
+    ['src/lib/settingsSnapshot.ts', 'editorLineNumbers'],
+    ['src/lib/scrollSync.ts', 'collectLineMetrics'],
+  ]
+  for (const [file, needle] of leftovers) {
+    assert.ok(
+      !readFileSync(join(root, file), 'utf8').includes(needle),
+      `${file} 里不该残留 ${needle}：功能撤了就要连开关、样式与同步白名单一起撤`,
+    )
+  }
+
+  const settingsSrc = readFileSync(join(root, 'src/pages/SettingsPage.tsx'), 'utf8')
+  for (const label of ['编辑区末尾留白', '双栏自动同步滚动']) {
+    assert.ok(settingsSrc.includes(label), `设置页里应有「${label}」相关开关文案`)
+  }
+  // 留白与联动都只是偏好，不进仓库：写在 settingsStore 的个人键上
+  const editorSettings = readFileSync(join(root, 'src/lib/editorSettings.ts'), 'utf8')
+  assert.ok(editorSettings.includes('useFlag'), '两个编辑器开关共用同一个开关工厂')
+  assert.ok(!editorSettings.includes('api.github.com'), '开关只写本机，不直连任何接口')
+  void rebuildTextareaLineMirror
+})
+
+test('issue #128：滚动条槽位固定 + 弹层滚动锁不顶页面 + 背景层按需加载', async () => {
+  const { isPageScrollLocked, lockPageScroll } = scrollLockMod
+  // scrollLock 读的是全局 document / window，所以用与其他用例同一套 JSDOM 环境
+  const env = setupJsdomTestEnv('https://example.com/settings')
+  try {
+    const { document } = env.dom.window
+    const html = document.documentElement
+    assert.equal(isPageScrollLocked(), false, '初始未锁')
+    const unlockA = lockPageScroll()
+    const unlockB = lockPageScroll()
+    assert.equal(document.body.style.overflow, 'hidden', '锁定时 body 不滚动')
+    assert.equal(html.style.overflow, 'hidden', 'html 也要一起锁，否则 iOS / 部分内核仍能滚页')
+    unlockA()
+    assert.equal(isPageScrollLocked(), true, '还有第二个持有者时不能提前解锁')
+    assert.equal(document.body.style.overflow, 'hidden')
+    unlockB()
+    assert.equal(isPageScrollLocked(), false, '引用计数归零后要恢复')
+    assert.equal(document.body.style.overflow, '', '恢复成脚本接管前的值，而不是写死 auto')
+    // 反复锁 / 解不泄漏计数
+    for (let i = 0; i < 5; i += 1) lockPageScroll()()
+    assert.equal(isPageScrollLocked(), false)
+  } finally {
+    env.cleanup()
+  }
+
+  /* ---- 位移抖动：槽位常驻 + 所有会锁滚动的地方都走同一个 refcount ---- */
+  const css = readFileSync(join(root, 'src/styles/index.css'), 'utf8')
+  const shellHtml = readFileSync(join(root, 'index.html'), 'utf8')
+  assert.match(
+    shellHtml,
+    /['"]html,\s*body\s*\{[^}]*scrollbar-gutter:\s*stable[^}]*\}['"]/,
+    'html 与 body 都要固定预留滚动条槽位（只写一处时，锁滚动的内核仍会跳）',
+  )
+  assert.ok(
+    shellHtml.includes("gutterStyle.id = 'starlog-scroll-gutter'"),
+    '注入的那条样式要有 id，方便排查；也不要顺手写成 <style> 标签（会被 Vite 抽成独立 CSS 资源）',
+  )
+  // 视口级规则不能进共享样式表：src/styles/index.css 会被插件编译成预览样式，
+  // 跟着进宿主页面就会缩窄插件预览，并让「真实浏览器排版对照」测试误报（CI 上真挂过）。
+  assert.ok(!/scrollbar-gutter\s*:/.test(css), 'scrollbar-gutter 只写在 index.html，不写进 src/styles/index.css')
+  assert.ok(!/overflow-y:\s*scroll/.test(css), '不要用 overflow-y: scroll 硬占位（锁滚时会留一条空白槽）')
+  for (const file of ['src/components/SearchDialog.tsx', 'src/components/LatexPicker.tsx', 'src/pages/Editor.tsx']) {
+    const src = readFileSync(join(root, file), 'utf8')
+    assert.ok(src.includes('lockPageScroll'), `${file} 的弹层 / 全屏要用引用计数的滚动锁`)
+    assert.ok(
+      !/document\.body\.style\.overflow\s*=\s*['"]hidden['"]/.test(src),
+      `${file} 不该再直接改写 body 的 overflow`,
+    )
+  }
+
+  /* ---- 首屏：装饰背景从入口 chunk 里拆出去 ---- */
+  const layout = readFileSync(join(root, 'src/components/Layout.tsx'), 'utf8')
+  assert.ok(/lazy\(\(\)\s*=>\s*import\('\.\/AnimatedBackdrop'\)/.test(layout), '动态背景改为按需加载')
+  assert.ok(layout.includes('Suspense'), '拆出去的图层要有 Suspense 兜底')
+  const main = readFileSync(join(root, 'src/main.tsx'), 'utf8')
+  assert.ok(main.indexOf('<ToastProvider') < main.indexOf('<SettingsSyncProvider'), '同步卡片依赖 toast，Provider 顺序不能反')
+  assert.ok(main.indexOf('<SettingsSyncProvider') < main.indexOf('<FontProvider'), '字体 / 背景要在同步层之下才能收到恢复事件')
+  const postsSrc = readFileSync(join(root, 'src/lib/posts.ts'), 'utf8')
+  assert.ok(
+    /let repoPostsCache/.test(postsSrc) && /let aggregateCache/.test(postsSrc),
+    '仓库文章解析与公开列表聚合都要有缓存，切页时不重复解析',
+  )
+  assert.ok(/repoPostsBySlug/.test(postsSrc), '按 slug 查文章要走索引，不能每次线性扫全表')
+  const viteConfig = readFileSync(join(root, 'vite.config.ts'), 'utf8')
+  assert.ok(!viteConfig.includes('inlineDynamicImports'), '线上构建保持分包，不能把一切塞进入口')
+})
+
+test('issue #112：局域网协作的段落合并、会话去抖与中心协议一致', async () => {
+  const {
+    applyRemoteOps,
+    blocksToText,
+    liveBlocks,
+    planLocalChange,
+    resequence,
+    splitParagraphs,
+    textToBlocks,
+  } = lanDocMod
+  const { createLanSession, normalizeHubUrl } = lanSyncMod
+
+  // 切段：行内换行留在同一段，连续空行合并成一个分隔
+  assert.deepEqual(splitParagraphs('a\nb\n\n\nc\n'), ['a\nb', 'c'])
+  assert.deepEqual(splitParagraphs('   \n\n  '), [])
+  const codeBlock = '```js\nlet x = 1\n\nlet y = 2\n```'
+  assert.deepEqual(splitParagraphs(codeBlock), [codeBlock], '代码块内部的空行不能被切开')
+  assert.deepEqual(
+    splitParagraphs('前\n\n::begin_ui-ccs\ncreate_point:A:(1,2);\n\ncreate_line:(x);\n::end_ui-ccs\n\n后'),
+    ['前', '::begin_ui-ccs\ncreate_point:A:(1,2);\n\ncreate_line:(x);\n::end_ui-ccs', '后'],
+    '容器块整体算一段，内部空行不切分',
+  )
+  assert.deepEqual(splitParagraphs('a\n\n```\n\n```\n\nb'), ['a', '```\n\n```', 'b'], '未闭合的围栏只在闭合后恢复切分')
+  assert.deepEqual(splitParagraphs('    let x = 1\n\n    let y = 2'), ['    let x = 1', '    let y = 2'], '缩进要保留')
+
+  const blocks = textToBlocks('第一段\n第二行\n\n第二段', '甲')
+  assert.equal(liveBlocks(blocks).length, 2)
+  assert.equal(blocksToText(blocks), '第一段\n第二行\n\n第二段', '切分与拼回要保持内容不变')
+
+  // 只改一段 → 只发一条 put；新增一段 → 插到相邻段之间
+  const plan = planLocalChange(blocks, '第一段\n第二行改过了\n\n第二段\n\n\n第三段', '甲')
+  assert.equal(plan.puts.length, 2, '改动 + 新增各一条')
+  assert.equal(plan.dels.length, 0)
+  assert.equal(plan.kept, 1, '没动的那段不该上行')
+  const inserted = plan.blocks.filter((block) => block.text === '第三段')[0]
+  assert.ok(inserted.seq > Math.max(...blocks.map((block) => block.seq)), '新段落排在最后')
+
+  // 删掉一段 → 打墓碑，而不是把后面的段落挪位
+  const deletePlan = planLocalChange(blocks, '第一段\n第二行\n\n', '甲')
+  assert.equal(deletePlan.dels.length, 1)
+  assert.equal(liveBlocks(deletePlan.blocks).length, 1)
+
+  // 后写覆盖先写；被覆盖的那一条要能被界面数出来
+  const remote = applyRemoteOps(blocks, [
+    { id: blocks[0].id, kind: 'put', text: '乙改的', v: 2, by: '乙', ts: Date.now() + 1000 },
+  ])
+  assert.equal(remote.blocks.find((block) => block.id === blocks[0].id).text, '乙改的')
+  assert.equal(remote.conflicts.length, 1, '覆盖本地内容要记一次冲突')
+  // 旧的（乱序到达的）改动不能把新内容顶掉
+  const stale = applyRemoteOps(remote.blocks, [{ id: blocks[0].id, kind: 'put', text: '旧稿', v: 1, by: '丙', ts: 1 }])
+  assert.equal(stale.blocks.find((block) => block.id === blocks[0].id).text, '乙改的')
+
+  // 删除是终局的：别人的旧 put 不能让段落复活
+  const afterDelete = applyRemoteOps(deletePlan.blocks, deletePlan.dels)
+  const revive = applyRemoteOps(afterDelete.blocks, [{ id: deletePlan.blocks[1].id, kind: 'put', text: '复活', v: 1, by: '乙', ts: 1 }])
+  assert.equal(liveBlocks(revive.blocks).length, 1)
+
+  // seq 挤在一起时中心重排，顺序保持不变
+  const squeezed = resequence([
+    { id: 'b1', text: '1', seq: 5, v: 1, by: '甲', ts: 1 },
+    { id: 'b2', text: '2', seq: 5, v: 1, by: '甲', ts: 1 },
+    { id: 'b3', text: '3', seq: 5.5, v: 1, by: '甲', ts: 1 },
+  ])
+  assert.deepEqual(liveBlocks(squeezed).map((block) => block.text), ['1', '2', '3'])
+  assert.ok(squeezed.every((block, index) => index === 0 || block.seq > squeezed[index - 1].seq), '重排后严格递增')
+
+  // 中心地址：允许省略协议与路径尾巴，但只认 http(s)
+  assert.equal(normalizeHubUrl('192.168.1.20:8787'), 'http://192.168.1.20:8787')
+  assert.equal(normalizeHubUrl('http://192.168.1.20:8787/'), 'http://192.168.1.20:8787')
+  assert.equal(normalizeHubUrl('http://192.168.1.20:8787/api'), 'http://192.168.1.20:8787')
+  assert.equal(normalizeHubUrl('https://hub.lan:8787'), 'https://hub.lan:8787')
+  for (const bad of ['', 'ftp://192.168.1.20', 'javascript:alert(1)', 'notaurl!!', 'http:///api', 'http:// 空格']) {
+    assert.throws(() => normalizeHubUrl(bad), /中心地址/, `不该接受 ${bad}`)
+  }
+  // 主机名允许 .local / .lan 这类局域网解析，也接受 IPv6 字面量
+  assert.equal(normalizeHubUrl('http://nas.local:8787'), 'http://nas.local:8787')
+  assert.equal(normalizeHubUrl('http://192.168.1.20'), 'http://192.168.1.20', '默认端口不用写出来')
+
+  /* ---- 会话层：去抖上行 + 输入期不被远端顶掉光标 ---- */
+  // 一个「迷你中心」：状态与真 hub 一样按 (v, ts) 后写覆盖先写，能直接复用前端那套合并函数
+  const store = []
+  let storeRev = 0
+  const sent = []
+  let onEvent = null
+  const commit = (ops, by) => {
+    const applied = applyRemoteOps(store, ops)
+    store.length = 0
+    store.push(...resequence(applied.blocks))
+    storeRev += 1
+    return { rev: storeRev, blocks: store.map((block) => ({ ...block })), peers: [{ name: by, at: 0 }] }
+  }
+  const fakeTransport = {
+    async request(path, init) {
+      const body = init?.body ?? {}
+      if (path === '/api/join') return { rev: storeRev, blocks: store.map((block) => ({ ...block })), peers: [] }
+      if (path === '/api/ops') {
+        sent.push(...body.ops.map((op) => ({ ...op })))
+        return commit(body.ops, body.name)
+      }
+      if (path === '/api/state') return { rev: storeRev, blocks: store.map((block) => ({ ...block })), peers: [] }
+      return { ok: true }
+    },
+    subscribe(_path, handler) {
+      onEvent = handler
+      return () => {
+        onEvent = null
+      }
+    },
+  }
+  let lastText = null
+  let lastConflicts = null
+  let lastStatus = null
+  const handlers = {
+    onText: (text, meta) => {
+      lastText = text
+      lastConflicts = meta.conflicts
+    },
+    onStatus: (next) => {
+      lastStatus = next
+    },
+    onPeers: () => {},
+  }
+  /** 另一台设备写一段：先落到中心，再推给本页（和真 hub 的顺序一致） */
+  const peerWrites = (who, text) => {
+    const created = textToBlocks(text, who, Date.now() + 10_000)
+    const ops = liveBlocks(created).map((block) => ({
+      id: block.id,
+      kind: 'put',
+      text: block.text,
+      seq: block.seq,
+      v: block.v,
+      by: who,
+      ts: block.ts,
+    }))
+    commit(ops, who)
+    onEvent({ type: 'doc', by: who, rev: storeRev, ops })
+    return created
+  }
+
+  const session = createLanSession({ room: '机房', name: '甲', handlers, quietMs: 5 }, fakeTransport)
+  // 与页面一致：先 seed 再 join —— 空房间时 join 会把整篇作为初始文档全量上行
+  session.seed('我的第一段\n\n我的第二段')
+  await session.join()
+  assert.equal(liveBlocks(store).length, 2, '空房间拿到初始全文')
+  const pushedAtJoin = sent.length
+  session.pushLocalText('我的第一段改\n\n我的第二段')
+  assert.equal(sent.length, pushedAtJoin, '还在去抖窗口内，不应立刻发出')
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 40))
+  assert.equal(sent.length, pushedAtJoin + 1, '去抖窗口结束后只发这一条改动')
+  assert.ok(sent.some((op) => op.text === '我的第一段改'), '改动的段落要上行')
+  assert.equal(liveBlocks(store).length, 2, '中心只有甲的两段')
+  assert.equal(liveBlocks(store).map((block) => block.text).join('\n\n'), '我的第一段改\n\n我的第二段')
+
+  // 乙在甲「正在输入」期间写了两段：甲的编辑区不能被打断（否则光标会跳），
+  // 但冲刷之后必须把它们并回来 —— 尤其不能当成「甲删掉了它们」上行。
+  const before = lastText
+  session.pushLocalText('我的第一段改\n\n我的第二段\n\n甲又补了一句')
+  peerWrites('乙', '乙的临时段落')
+  peerWrites('乙', '乙又写了一段')
+  assert.equal(lastText, before, '正在输入时不能把远端内容硬塞回编辑区')
+  await session.flush()
+  assert.ok(lastText.includes('甲又补了一句'), '冲刷后本地内容要上行')
+  assert.ok(lastText.includes('乙的临时段落'), '输入期间收到的远端段落必须并回来，不能当成被删掉')
+  assert.ok(lastText.includes('乙又写了一段'), '远端后写的段落也要出现在合并结果里')
+  assert.ok(liveBlocks(store).some((block) => block.text === '乙又写了一段'), '中心不能被甲的冲刷抹掉乙的段落')
+  assert.equal(lastStatus, 'online', '同步完成后回到已连接状态')
+  Array.isArray(lastConflicts)
+  session.leave()
+
+  /* ---- 真跑一个中心进程：两个客户端 + SSE 广播，与前端语义对齐 ---- */
+  const { server } = lanHubMod.createLanHub({ room: 't1', file: join(root, 'offline/index.html'), onLog: () => {} })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  const port = server.address().port
+  const base = `http://127.0.0.1:${port}`
+  const api = async (path, payload) => {
+    const res = await fetch(base + path, payload ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) } : undefined)
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(`${res.status} ${json.error ?? ''}`)
+    return json
+  }
+  try {
+    // SSE 先挂上，才能收到另一台设备提交的广播帧
+    const stream = await fetch(`${base}/api/events?room=t1&name=丙`)
+    const reader = stream.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    /** 帧超时兜底：拿不到就失败，不能让测试挂在长连接上 */
+    const withTimeout = (promise) =>
+      Promise.race([promise, new Promise((resolvePromise) => setTimeout(() => resolvePromise(null), 4000))])
+        .then((frame) => {
+          assert.ok(frame, '4 秒内没等到期望的帧')
+          return frame
+        })
+    const nextFrame = (what, matcher = () => true) => withTimeout(readFrame(matcher), what)
+    /** 只返回满足条件的那一帧（presence / doc / hello 会混在一条流里） */
+    const readFrame = async (matcher = () => true) => {
+      for (let i = 0; i < 40; i += 1) {
+        const hit = buffer.indexOf('data: ')
+        if (hit >= 0) {
+          const end = buffer.indexOf('\n\n', hit)
+          if (end >= 0) {
+            const payload = buffer.slice(hit + 6, end)
+            buffer = buffer.slice(end + 2)
+            let frame = null
+            try {
+              frame = JSON.parse(payload)
+            } catch {
+              frame = null
+            }
+            if (frame && matcher(frame)) return frame
+            continue
+          }
+        }
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+      }
+      return null
+    }
+    const hello = await nextFrame('hello 首帧', (frame) => frame.type === 'hello')
+    assert.equal(hello.type, 'hello', '连上先收到当前快照')
+    assert.ok(Array.isArray(hello.blocks))
+
+    const a = await api('/api/join', { room: 't1', name: '甲' })
+    assert.equal(a.blocks.length, 0, '新房间是空的')
+    const first = textToBlocks('甲的第一段\n\n甲的第二段', '甲')
+    const afterPush = await api('/api/ops', {
+      room: 't1',
+      name: '甲',
+      ops: liveBlocks(first).map((block) => ({ id: block.id, kind: 'put', text: block.text, seq: block.seq, v: block.v, by: '甲', ts: block.ts })),
+    })
+    assert.equal(afterPush.blocks.length, 2)
+    const pushed = await nextFrame('甲提交的 doc 广播', (frame) => frame.type === 'doc')
+    assert.ok(pushed, '另一台设备要收到 doc 广播')
+    assert.equal(pushed.by, '甲')
+    assert.equal(pushed.ops.length, 2)
+
+    // 乙在只读快照上改第一段，甲的第二段不受影响
+    const b = await api('/api/join', { room: 't1', name: '乙' })
+    assert.equal(b.blocks.length, 2, '后进来的设备拿到全文')
+    const changed = await api('/api/ops', {
+      room: 't1',
+      name: '乙',
+      ops: [{ id: b.blocks[0].id, kind: 'put', text: '乙改了第一段', v: b.blocks[0].v + 1, by: '乙', ts: Date.now() + 2000 }],
+    })
+    assert.equal(changed.blocks.length, 2)
+    assert.equal(changed.blocks.find((block) => block.id === b.blocks[0].id).text, '乙改了第一段')
+    assert.equal(changed.blocks.find((block) => block.id === b.blocks[1].id).text, '甲的第二段', '另一段必须原样保留')
+
+    // 陈旧写入被中心挡掉（与前端 isNewer 同一套判据）
+    const stale = await api('/api/ops', { room: 't1', name: '丙', ops: [{ id: b.blocks[0].id, kind: 'put', text: '旧稿覆盖', v: 1, by: '丙', ts: 1 }] })
+    assert.equal(stale.blocks.find((block) => block.id === b.blocks[0].id).text, '乙改了第一段', '旧版本号不能覆盖新内容')
+    assert.equal(stale.rev, changed.rev, '没有实际改动就不该推进 rev')
+
+    // 在线成员与删除段落
+    const health = await api('/api/health')
+    assert.ok(health.rooms.includes('t1'))
+    assert.ok(health.peers >= 1, 'SSE / join 过的成员要能被统计到')
+    const withDelete = await api('/api/ops', { room: 't1', name: '乙', ops: [{ id: b.blocks[1].id, kind: 'del', v: b.blocks[1].v + 1, by: '乙', ts: Date.now() + 3000 }] })
+    assert.equal(withDelete.blocks.length, 1, '墓碑段落不出现在快照里')
+    await nextFrame('删除段落的 doc 广播', (frame) => frame.type === 'doc')
+
+    // 离线版产物仍能作为站点发出去（其他设备直接用浏览器加入）
+    // 只读响应头就掐掉：22MB 的包没必要在测试里整份下完，也免得连接挂着不放
+    const page = await new Promise((resolvePromise) => {
+      const req = httpRequest(`${base}/`, (res) => {
+        resolvePromise({ status: res.statusCode ?? 0, type: String(res.headers['content-type'] ?? '') })
+        res.destroy()
+      })
+      req.on('error', () => resolvePromise({ status: 0, type: '' }))
+    })
+    assert.equal(page.status, 200, '中心要能把离线 HTML 提供给局域网里的其他设备')
+    assert.equal(page.type.split(';')[0], 'text/html')
+    await reader.cancel().catch(() => {})
+  } finally {
+    // SSE 是长连接，不断开就 close 不掉
+    server.closeAllConnections?.()
+    await new Promise((resolvePromise) => server.close(() => resolvePromise(null)))
+  }
+
+  /* ---- 静态约定：入口只在离线版出现，产物里不含任何公网端点 ---- */
+  const appSrc = readFileSync(join(root, 'src/App.tsx'), 'utf8')
+  assert.ok(appSrc.includes('toolbox/lan'), '路由要挂上')
+  const toolboxSrc = readFileSync(join(root, 'src/pages/Toolbox.tsx'), 'utf8')
+  assert.ok(/OFFLINE && \([\s\S]*toolbox\/lan/.test(toolboxSrc), '卡片只在离线版出现（issue #112：仅实现在离线版）')
+  const lanPage = readFileSync(join(root, 'src/pages/LanEdit.tsx'), 'utf8')
+  assert.ok(lanPage.includes('scripts/offline-hub.mjs'), '页面上要写清中心怎么跑')
+  const hubSrc = readFileSync(join(root, 'scripts/offline-hub.mjs'), 'utf8')
+  for (const forbidden of ['api.github.com', 'raw.githubusercontent', 'fonts.googleapis.com', 'https://registry', 'github.com/login']) {
+    assert.ok(!hubSrc.includes(forbidden), `中心不该引用 ${forbidden}`)
+  }
+  assert.ok(hubSrc.includes("'0.0.0.0'"), '默认要监听局域网地址')
+  assert.ok(hubSrc.includes('text/event-stream'), 'SSE 广播是必需的')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  assert.equal(pkg.scripts.hub, 'node scripts/offline-hub.mjs', '要有一条省心的启动命令')
+})
+
+test('issue #112 追加：房间码 + 中心自动发现（加入者只输 6 位数字）', async () => {
+  const { discoverHub, formatRoomCode, hubCandidates, normalizeHubUrl, normalizeRoomCode, parseLanInvite } =
+    lanSyncMod
+  const { createLanHub, lanInviteUrl } = lanHubMod
+
+  // 房间码：只认 6 位数字，展示时固定 3-3 分组
+  assert.equal(normalizeRoomCode('483-902'), '483902')
+  assert.equal(normalizeRoomCode(' 483 902 '), '483902')
+  assert.equal(normalizeRoomCode(483902), '483902')
+  assert.equal(formatRoomCode('483902'), '483-902')
+  for (const bad of ['', '12', '48390', '4839021', 'abc-abc', '机房协作']) {
+    assert.equal(normalizeRoomCode(bad), '', `${bad} 不是房间码`)
+  }
+
+  // 加入链接：查询串在 hash 里（HashRouter），hub 可以省略
+  const invite = parseLanInvite('hub=http%3A%2F%2F192.168.1.20%3A8787&room=483-902')
+  assert.deepEqual(invite, { hub: 'http://192.168.1.20:8787', room: '483-902', code: '483902' })
+  assert.equal(parseLanInvite('room=483902').hub, '', '链接里没写 hub 时留空，由页面用当前站点补')
+  assert.equal(parseLanInvite('tab=1'), null, '与本功能无关的查询串返回 null，免得乱自动连接')
+  assert.equal(parseLanInvite('?room=机房协作').code, '', '填的是房间名时 code 为空')
+  assert.equal(parseLanInvite('?room=机房协作').room, '机房协作')
+  assert.equal(parseLanInvite(''), null)
+  assert.equal(
+    lanInviteUrl('192.168.1.20', 8787, '483902'),
+    'http://192.168.1.20:8787/#/toolbox/lan?room=483-902',
+    '中心打印的链接必须能被路由直接接住',
+  )
+  assert.ok(
+    lanInviteUrl('192.168.1.20', 8787, '483902', { withHub: true }).includes('hub=http'),
+    '--with-hub 时才把中心地址也写进链接',
+  )
+
+  // 候选顺序：手填 > 当前站点 > 记忆；非 http 与重复都要被滤掉
+  assert.deepEqual(
+    hubCandidates({
+      manual: 'http://10.0.0.5:8787/',
+      currentOrigin: 'http://192.168.1.20:8787',
+      history: ['http://10.0.0.5:8787', 'http://nas.local:8787'],
+    }),
+    ['http://10.0.0.5:8787', 'http://192.168.1.20:8787', 'http://nas.local:8787'],
+  )
+  assert.deepEqual(
+    hubCandidates({ currentOrigin: 'file://', history: ['null', 'http://a:1', 'http://a:1'] }),
+    ['http://a:1'],
+    'file:// 打开的离线文件没有 origin 可用',
+  )
+
+  // 发现：不可达的候选跳过、没有这个码的候选跳过、命中就停
+  const probes = []
+  const found = await discoverHub('483-902', ['http://a:1', 'http://b:2', 'http://c:3'], async (url) => {
+    probes.push(url)
+    if (url.includes('//a:1')) throw new Error('连接被拒绝')
+    if (url.includes('//b:2')) return { ok: true, rooms: [{ code: '111222', name: '别人的房间' }] }
+    return { ok: true, rooms: [{ code: '483902', name: '机房协作', rev: 3, peers: 2 }] }
+  })
+  assert.equal(found.hub, 'http://c:3')
+  assert.equal(found.room.name, '机房协作')
+  assert.deepEqual(probes, ['http://a:1/api/rooms?code=483902', 'http://b:2/api/rooms?code=483902', 'http://c:3/api/rooms?code=483902'])
+  assert.equal(await discoverHub('', ['http://a:1'], async () => ({ rooms: [] })), null, '没填码不去乱猜')
+  assert.equal(await discoverHub('999999', [], async () => ({ rooms: [] })), null)
+
+  /* ---- 中心侧：启动就把房间建好、按码加入、错码 404 ---- */
+  const { server, rooms } = createLanHub({
+    code: '483902',
+    room: '机房四人',
+    file: join(root, 'offline/index.html'),
+    onLog: () => {},
+  })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const api = async (path, payload) => {
+    const res = await fetch(base + path, payload ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) } : undefined)
+    const json = await res.json().catch(() => ({}))
+    return { status: res.status, json }
+  }
+  try {
+    // 房间是启动时就存在的（否则加入者扫描时会「谁都没有」）
+    const listed = await api('/api/rooms')
+    assert.equal(listed.status, 200)
+    const mine = listed.json.rooms.find((item) => item.code === '483902')
+    assert.ok(mine, '启动参数里的 --code 要真的用上')
+    assert.equal(mine.name, '机房四人')
+    assert.equal(typeof mine.chars, 'number')
+    const filtered = await api('/api/rooms?code=483902')
+    assert.deepEqual(filtered.json.rooms.map((item) => item.code), ['483902'])
+    assert.deepEqual((await api('/api/rooms?code=123456')).json.rooms, [], '只查不建')
+    assert.equal((await api('/api/rooms?code=abc')).status, 200, '非数字 code 也不报错，返回全量')
+
+    const joined = await api('/api/join', { code: '483902', name: '乙' })
+    assert.equal(joined.status, 200)
+    assert.equal(joined.json.code, '483902', '快照要带房间码，页面才知道显示什么')
+    assert.ok(joined.json.peers.some((peer) => peer.name === '乙'))
+    assert.equal((await api('/api/join', { code: '999999', name: '丙' })).status, 404, '错码不能凭空开出新房间')
+
+    // 6 位数字当房间名提交时会沿用这个码；其他名字则自动分配一个
+    const byName = await api('/api/join', { room: '机房四人', name: '甲' })
+    assert.equal(byName.json.code, '483902', '同一个房名要落回同一个房间')
+    const fresh = await api('/api/join', { room: '另一个房间', name: '甲' })
+    assert.match(fresh.json.code, /^[1-9]\d{5}$/, '新房间自动分配 6 位码')
+    assert.notEqual(fresh.json.code, '483902')
+    const byCodeName = await api('/api/join', { room: '135-790', name: '甲' })
+    assert.equal(byCodeName.json.code, '135790', '把码当房名填也不该换码')
+    assert.equal(byCodeName.json.name, '房间 135-790')
+
+    // state / leave 都认房间码
+    const state = await api('/api/state?code=135790')
+    assert.equal(state.json.code, '135790')
+    const left = await api('/api/leave', { code: '135790', name: '甲' })
+    assert.equal(left.json.ok, true)
+    assert.ok(!(await api('/api/state?code=135790')).json.peers.some((peer) => peer.name === '甲'), '离开后不再算在线')
+
+    // 中心给的码与 --code 冲突时不会撞车
+    const taken = await api('/api/join', { room: '483902', name: '甲' })
+    assert.equal(taken.json.code, '483902', '已存在的码直接复用同一个房间')
+    // 房间表是模块级的（同一进程里多个中心实例共用），所以按名字核对而不是数总量
+    assert.equal(rooms.get('机房四人').code, '483902')
+    assert.match(rooms.get('另一个房间').code, /^[1-9]\d{5}$/, '没指定码时随机分配')
+    assert.equal(rooms.get('135-790').code, '135790', '码当房名提交时同一个房间，不再新建')
+  } finally {
+    server.closeAllConnections?.()
+    await new Promise((resolvePromise) => server.close(() => resolvePromise(null)))
+  }
+
+  // 会话层要把中心的房间码透出来（页面靠它显示大号房间码）
+  assert.equal(
+    await createSessionWithCode(lanSyncMod, '483902'),
+    '483-902',
+    'session.getRoomCode() 要能在 join 之后拿到中心给的码，页面才知道显示什么',
+  )
+
+  /* ---- 静态约定：页面以房间码为主入口，中心地址降为兜底 ---- */
+  const lanPage = readFileSync(join(root, 'src/pages/LanEdit.tsx'), 'utf8')
+  assert.ok(lanPage.includes('discoverHub'), '页面要先做中心自动发现')
+  assert.ok(lanPage.includes('parseLanInvite'), '要能直接吃中心打印的加入链接')
+  assert.ok(lanPage.includes('starlog:lan-hubs'), '连过的中心要记住')
+  assert.ok(lanPage.includes('复制加入链接'), '发起者要能一键把链接发出去')
+  assert.ok(lanPage.includes('<details'), '手填地址收进「高级」里，不做默认路径')
+  const hubSrc = readFileSync(join(root, 'scripts/offline-hub.mjs'), 'utf8')
+  assert.ok(hubSrc.includes('--open') && hubSrc.includes('--code'), '帮助里要写清这两个参数')
+  assert.ok(hubSrc.includes('spawn'), '--open 用系统默认浏览器打开')
+  assert.ok(hubSrc.includes('formatRoomCode(room.code)'), '启动横幅要打印房间码')
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  assert.equal(pkg.scripts.hub, 'node scripts/offline-hub.mjs')
+})
+
+/** 会话层拿中心房间码的最小验证（不真起进程，用假 transport）。 */
+async function createSessionWithCode(lanSync, code) {
+  const transport = {
+    async request(path) {
+      if (path === '/api/join') return { rev: 0, code, name: '机房四人', blocks: [], peers: [] }
+      return { rev: 0, code, name: '机房四人', blocks: [], peers: [] }
+    },
+    subscribe() {
+      return () => {}
+    },
+  }
+  const session = lanSync.createLanSession(
+    { room: code, name: '甲', handlers: { onText: () => {}, onStatus: () => {}, onPeers: () => {} }, quietMs: 1 },
+    transport,
+  )
+  await session.join()
+  return lanSync.formatRoomCode(session.getRoomCode())
+}

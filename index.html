@@ -22,6 +22,25 @@
       // 防止主题、字体与背景在首屏闪烁。
       ;(function () {
         var root = document.documentElement
+
+        // issue #128：切页时整页左右跳，根源是「竖排滚动条时有时无」—— 标签页 / 百宝箱内容不足一屏
+        // 就没有滚动条，内容宽出约 15px，回到首页 / 文章页又缩回去。让槽位恒定保留（短页也留位）就不跳了；
+        // 弹层锁滚动与编辑器全屏写的是 overflow:hidden，它同样是滚动容器，槽位在锁定期间照样保留，
+        // 所以不需要再用 padding 手工补宽度（补了反而双重偏移）。html 与 body 都要写：浏览器把「视口」的
+        // overflow / scrollbar-gutter 取自根元素，根元素为 visible 时才改取 body（本项目两处都碰过），
+        // 只声明一处会漏掉另一条传播路径。
+        //
+        // 这段规则既不写在 src/styles/index.css，也不写成 index.html 里的 <style>：
+        //   · 那份样式表同时是 VS Code 插件预览的来源（vscode_extensions/v1/build.mjs 直接编译它，
+        //     而 html / body 这类外壳选择器按约定不加命名空间），视口级规则会跟着缩窄插件预览，
+        //     插件的「真实浏览器排版对照」测试就是这样挂的；
+        //   · HTML 里的 <style> 会被 Vite 抽成一条独立 CSS 资源，而离线单文件构建假定「只有一个 CSS」，
+        //     这个几十字节的小块会顶掉真正的那份（verify-offline 会以「@font-face 0 条」报出来）。
+        // 所以在首屏脚本里注入，只作用于博客自己的文档，且在首次绘制之前就已生效。
+        var gutterStyle = document.createElement('style')
+        gutterStyle.id = 'starlog-scroll-gutter'
+        gutterStyle.textContent = 'html,body{scrollbar-gutter:stable}'
+        document.head.appendChild(gutterStyle)
         var systemDark = false
         try {
           systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -107,6 +126,47 @@
           var monoFamilies = cleanFamilies(savedFont && savedFont.monoFamilies, savedFont && savedFont.monoFamily)
           if (monoFamilies.length) {
             root.style.setProperty('--font-mono', quoteFamilies(monoFamilies) + ', ' + MONO_FALLBACK)
+          }
+
+          // 固定背景图（issue #126）：先把图铺在 body 上，等 React 的图层接管后再删掉这段临时样式，
+          // 于是刷新时不会出现「纯底色 → 背景图」的跳变。真正的图层（含跟随滚动、覆盖层）
+          // 由 src/components/BackgroundImageLayer.tsx 负责，它挂载时负责 remove 这个 <style>。
+          var savedBackgroundImage = personalSettings && personalSettings.backgroundImage
+          var bootBgUrl =
+            savedBackgroundImage && savedBackgroundImage.enabled && typeof savedBackgroundImage.url === 'string'
+              ? savedBackgroundImage.url.trim()
+              : ''
+          // 白名单与 src/lib/backgroundImage.ts 一致：只接受 data:image 或 http(s)，
+          // 且不含引号 / 反斜杠 / 换行，避免拼进 CSS 时被截断。
+          // 离线版常见用法是 file:// 直接双击打开：那种情况下不铺远程图（不联网是它的承诺），
+          // 只有同目录里存的 base64 背景才生效。
+          var isFileProtocol = window.location.protocol === 'file:'
+          var bootBgAllowed =
+            bootBgUrl &&
+            bootBgUrl.indexOf('"') === -1 &&
+            bootBgUrl.indexOf('\\') === -1 &&
+            !/[\n\r]/.test(bootBgUrl) &&
+            (/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(bootBgUrl) ||
+              (!isFileProtocol && /^https?:\/\/.+$/i.test(bootBgUrl)))
+          if (bootBgAllowed) {
+            var bgFit = savedBackgroundImage.fit === 'contain' ? 'contain' : 'cover'
+            var bgDim = Number(savedBackgroundImage.dim)
+            var dimAlpha = isFinite(bgDim) ? Math.max(0, Math.min(80, bgDim)) / 100 : 0
+            var bgStyle = document.createElement('style')
+            bgStyle.id = 'starlog-boot-bg'
+            bgStyle.textContent =
+              'body{background-image:' +
+              (dimAlpha > 0
+                ? 'linear-gradient(rgba(13,16,23,' + dimAlpha.toFixed(3) + '),rgba(13,16,23,' + dimAlpha.toFixed(3) + ')),'
+                : '') +
+              'url("' +
+              bootBgUrl +
+              '");background-size:' +
+              bgFit +
+              ';background-position:center top;background-repeat:no-repeat;background-attachment:' +
+              (savedBackgroundImage.fixed === false ? 'scroll' : 'fixed') +
+              ';}'
+            document.head.appendChild(bgStyle)
           }
 
           var savedBackground =

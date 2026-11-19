@@ -1,6 +1,7 @@
 import { STORAGE_KEYS } from './config'
 
-type PersonalSettings = Record<string, unknown>
+/** 本机集中保存的个人偏好（settingsStore 的唯一数据形状，快照模块共用同一个类型） */
+export type PersonalSettings = Record<string, unknown>
 
 function readAll(): PersonalSettings {
   if (typeof localStorage === 'undefined') return {}

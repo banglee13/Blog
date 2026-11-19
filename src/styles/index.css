@@ -297,6 +297,12 @@
     --site-header-surface: var(--theme-surface-dark);
   }
 
+  /*
+    issue #128 的「滚动条槽位常驻」（html / body 上的 scrollbar-gutter）写在 index.html 的
+    <style> 里，不在这里 —— 这份样式表同时是 VS Code 插件预览的来源（vscode_extensions/v1/build.mjs
+    会把 src/styles/index.css 编译进 preview.css，且 html / body 这类外壳选择器按约定不加命名空间），
+    视口级规则跟着进宿主页面就会无端缩窄插件预览，插件那条「真实浏览器排版对照」测试也会因此误报。
+  */
   html {
     -webkit-tap-highlight-color: transparent;
     /* 字号偏好在根节点统一缩放，因此正文、标题和 KaTeX 公式保持比例。 */
@@ -883,6 +889,12 @@ details[open] .callout-chevron {
   tab-size: 2;
   line-height: 1.75;
 }
+
+/*
+ * 编辑区曾有一版左侧行号栏（issue #127），站长决定撤掉：<textarea> 不暴露行盒，编号只能靠
+ * 「同字体同宽度的隐藏镜像层」量出来，折行宽度、字体加载时机、内边距变化任一没对上就会整栏错位，
+ * 收益又远不如代码编辑器 —— 现在只保留下面这条「末段可滚到顶」的留白相关样式。
+ */
 
 @media print {
   .no-print {

@@ -1,4 +1,13 @@
-import { commentsConfig, githubConfig, oauthConfig, STORAGE_KEYS } from './config'
+import { commentsConfig, githubConfig, oauthConfig, settingsSyncConfig, STORAGE_KEYS } from './config'
+import {
+  mergeSettingsForSave,
+  parseSettingsDiscussionBody,
+  renderSettingsDiscussionBody,
+  settingsDiscussionMarker,
+  settingsDiscussionTitle,
+  type PersonalSettings,
+  type SettingsSnapshot,
+} from './settingsSnapshot'
 import { readPersonalSetting, writePersonalSetting } from './settingsStore'
 import { OFFLINE, OFFLINE_NO_NETWORK_HINT } from './runtime'
 
@@ -323,6 +332,22 @@ export async function listRemotePosts(target = getRepoTarget()): Promise<Content
       `/repos/${target.owner}/${target.repo}/contents/${target.postsDir}?ref=${encodeURIComponent(target.branch)}`,
     )
     return items.filter((i) => i.type === 'file' && i.name.endsWith('.md'))
+  } catch (err) {
+    if (err instanceof Error && /找不到资源/.test(err.message)) return []
+    throw err
+  }
+}
+
+/**
+ * 列出仓库某个目录下的条目（issue #126 用它读 `user_upload/background_image`）。
+ * 目录不存在 / 仓库没有这个目录时返回空数组，其他错误照旧抛出。
+ */
+export async function listRepoDirectory(path: string, target = getRepoTarget()): Promise<ContentItem[]> {
+  try {
+    const items = await gh<ContentItem[]>(
+      `/repos/${target.owner}/${target.repo}/contents/${encodeRepoPath(path)}?ref=${encodeURIComponent(target.branch)}`,
+    )
+    return Array.isArray(items) ? items : []
   } catch (err) {
     if (err instanceof Error && /找不到资源/.test(err.message)) return []
     throw err
@@ -1127,53 +1152,6 @@ export async function fetchGithubFontPreference(
   }
 }
 
-export interface SettingsFileUpdate {
-  path: string
-  text: string
-  message: string
-}
-
-/** 构造字体偏好设置文件内容（供立即提交或「待更新队列」暂存使用）。 */
-export function buildFontPreferenceFile(
-  login: string,
-  preference: GithubFontPreference,
-): SettingsFileUpdate {
-  return {
-    path: fontSettingsPath(login),
-    message: `chore(settings): 保存 @${login} 的字体与字号偏好`,
-    text:
-      JSON.stringify(
-        {
-          version: 3,
-          family: preference.family,
-          monoFamily: preference.monoFamily || '',
-          sizePercent: preference.sizePercent,
-          updatedAt: preference.updatedAt || Date.now(),
-        },
-        null,
-        2,
-      ) + '\n',
-  }
-}
-
-export async function saveGithubFontPreference(
-  login: string,
-  preference: GithubFontPreference,
-  target = getRepoTarget(),
-): Promise<void> {
-  const file = buildFontPreferenceFile(login, preference)
-  const sha = await getSha(file.path, target)
-  await gh(`/repos/${target.owner}/${target.repo}/contents/${encodeRepoPath(file.path)}`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      message: file.message,
-      content: encodeBase64(file.text),
-      branch: target.branch,
-      ...(sha ? { sha } : {}),
-    }),
-  })
-}
-
 export interface GithubAnimatedBackgroundPreference {
   scene: string
   values: Record<string, Record<string, number>>
@@ -1250,46 +1228,318 @@ function parseAnimatedBackgroundPreference(raw: unknown): GithubAnimatedBackgrou
   return { scene: data.scene, values }
 }
 
-/** 构造外观偏好设置文件内容（供立即提交或「待更新队列」暂存使用）。 */
-export function buildBackgroundPreferenceFile(
-  login: string,
-  preference: GithubBackgroundPreference,
-): SettingsFileUpdate {
-  return {
-    path: backgroundSettingsPath(login),
-    message: `chore(settings): 保存 @${login} 的外观偏好`,
-    text:
-      JSON.stringify(
-        {
-          version: 4,
-          color: preference.color,
-          intensity: preference.intensity,
-          colorTheme: preference.colorTheme ?? '',
-          themeMode: preference.themeMode ?? 'system',
-          animatedBackground: preference.animatedBackground ?? { scene: 'none', values: {} },
-          siteLayout: preference.siteLayout,
-          updatedAt: preference.updatedAt || Date.now(),
-        },
-        null,
-        2,
-      ) + '\n',
+/* -------------------- 账号设置快照（GitHub Discussions，issue #129 / #130） -------------------- */
+
+/**
+ * 每个账号一条 Discussion 保存个人设置。
+ *
+ * 为什么用 Discussions 而不是仓库文件（issue #130）：
+ *   · 设置是本机偏好，不是站点内容——写进仓库会凭空多出成百上千条「chore(settings)」提交；
+ *   · 写文件要求 Contents 写权限，普通读者拿不到，只能靠「待更新队列」手动统一更新；
+ *   · Discussions 的读写只需要一个普通账号，条目本身还可以直接在 GitHub 上查看 / 删除。
+ *
+ * 定位方式与文章评论一致：正文里放一个 HTML 注释标记，不依赖标题不被用户改动。
+ */
+
+/** 缓存「这个账号的设置讨论是第几号」，避免每次自动保存都要翻一遍讨论列表。 */
+interface SettingsDiscussionRef {
+  number: number
+  id: string
+  updatedAt: number
+}
+
+function readSettingsRefCache(): Record<string, SettingsDiscussionRef> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS.settingsDiscussion) || '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
   }
 }
 
-export async function saveGithubBackgroundPreference(
+function writeSettingsRefCache(login: string, ref: SettingsDiscussionRef) {
+  const cache = readSettingsRefCache()
+  cache[login] = ref
+  localStorage.setItem(STORAGE_KEYS.settingsDiscussion, JSON.stringify(cache))
+}
+
+export function clearSettingsRefCache(login?: string) {
+  if (!login) {
+    localStorage.removeItem(STORAGE_KEYS.settingsDiscussion)
+    return
+  }
+  const cache = readSettingsRefCache()
+  delete cache[login]
+  localStorage.setItem(STORAGE_KEYS.settingsDiscussion, JSON.stringify(cache))
+}
+
+interface SettingsDiscussionNode {
+  id: string
+  number: number
+  url: string
+  body: string
+}
+
+interface SettingsRepositoryRef {
+  repositoryId: string
+  categoryId: string
+  categoryName: string
+}
+
+/**
+ * 找一个能放设置讨论的分类：优先 `settingsSyncConfig.category`（默认 Settings），
+ * 仓库里没有这个分类时退回文章评论用的分类，最后一名是「随便挑一个已有分类」——
+ * 站长不必为了「让设置能同步」先去仓库里手工建分类。
+ */
+async function getSettingsDiscussionRepository(target: RepoTarget): Promise<SettingsRepositoryRef> {
+  const data = await githubGraphql<{
+    repository: {
+      id: string
+      hasDiscussionsEnabled: boolean
+      discussionCategories: { nodes: DiscussionCategoryNode[] }
+    } | null
+  }>(
+    `query SettingsRepository($owner: String!, $repo: String!) {
+      repository(owner: $owner, name: $repo) {
+        id
+        hasDiscussionsEnabled
+        discussionCategories(first: 100) {
+          nodes { id name }
+        }
+      }
+    }`,
+    { owner: target.owner, repo: target.repo },
+  )
+  const repository = data.repository
+  if (!repository) throw new Error('找不到用于保存设置的 GitHub 仓库')
+  if (!repository.hasDiscussionsEnabled) {
+    throw new Error('目标仓库尚未开启 GitHub Discussions，请先在仓库 Settings → Features 中启用')
+  }
+  const wanted = settingsSyncConfig.category.toLowerCase()
+  const fallback = commentsConfig.category.toLowerCase()
+  const nodes = repository.discussionCategories.nodes
+  const category =
+    nodes.find((item) => item.name.toLowerCase() === wanted) ??
+    nodes.find((item) => item.name.toLowerCase() === fallback) ??
+    nodes[0]
+  if (!category) throw new Error('目标仓库里没有任何 Discussions 分类，无法保存设置')
+  return { repositoryId: repository.id, categoryId: category.id, categoryName: category.name }
+}
+
+const SETTINGS_DISCUSSION_QUERY = `
+  id number url body
+`
+
+async function fetchSettingsDiscussionByNumber(
+  number: number,
+  target: RepoTarget,
+): Promise<SettingsDiscussionNode | null> {
+  const data: { repository: { discussion: SettingsDiscussionNode | null } | null } = await githubGraphql(
+    `query SettingsDiscussionByNumber($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        discussion(number: $number) { ${SETTINGS_DISCUSSION_QUERY} }
+      }
+    }`,
+    { owner: target.owner, repo: target.repo, number },
+  )
+  return data.repository?.discussion ?? null
+}
+
+/** 在设置分类里按标记找到属于这个账号的讨论（按更新时间倒序翻页，最新的一条优先）。 */
+async function findSettingsDiscussion(
   login: string,
-  preference: GithubBackgroundPreference,
+  categoryId: string,
+  target: RepoTarget,
+): Promise<SettingsDiscussionNode | null> {
+  const marker = settingsDiscussionMarker(login)
+  let after: string | null = null
+  do {
+    const data: {
+      repository: {
+        discussions: {
+          nodes: SettingsDiscussionNode[]
+          pageInfo: { hasNextPage: boolean; endCursor: string | null }
+        } | null
+      } | null
+    } = await githubGraphql(
+      `query SettingsDiscussions($owner: String!, $repo: String!, $categoryId: ID!, $after: String) {
+        repository(owner: $owner, name: $repo) {
+          discussions(first: 50, after: $after, categoryId: $categoryId, orderBy: { field: UPDATED_AT, direction: DESC }) {
+            nodes { ${SETTINGS_DISCUSSION_QUERY} }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }`,
+      { owner: target.owner, repo: target.repo, categoryId, after },
+    )
+    const connection = data.repository?.discussions
+    if (!connection) throw new Error('找不到用于保存设置的 GitHub 仓库')
+    // 只认标记，不认标题：标题被站长改过也不影响恢复
+    const match = connection.nodes.find((item) => item.body.includes(marker))
+    if (match) return match
+    if (!connection.pageInfo.hasNextPage || !connection.pageInfo.endCursor) return null
+    after = connection.pageInfo.endCursor
+  } while (after)
+  return null
+}
+
+/** 定位账号的设置讨论：先试本地缓存的编号，失败再翻分类列表。 */
+async function locateSettingsDiscussion(
+  login: string,
+  context: SettingsRepositoryRef,
+  target: RepoTarget,
+): Promise<SettingsDiscussionNode | null> {
+  const cached = readSettingsRefCache()[login]
+  if (cached?.number) {
+    const direct = await fetchSettingsDiscussionByNumber(cached.number, target)
+    if (direct && direct.body.includes(settingsDiscussionMarker(login))) {
+      if (direct.id !== cached.id) writeSettingsRefCache(login, { ...cached, id: direct.id })
+      return direct
+    }
+  }
+  const found = await findSettingsDiscussion(login, context.categoryId, target)
+  if (found) writeSettingsRefCache(login, { number: found.number, id: found.id, updatedAt: Date.now() })
+  return found
+}
+
+export interface SettingsSnapshotResult {
+  snapshot: SettingsSnapshot | null
+  /** 设置讨论的地址，界面直接给出「在 GitHub 上查看」链接 */
+  url: string | null
+  /** 实际使用的 Discussions 分类名（可能与配置不同，用于提示） */
+  categoryName: string
+}
+
+/** 读取账号设置快照；远端还没有设置时 snapshot 为 null（不是错误）。 */
+export async function loadGithubSettingsSnapshot(
+  login: string,
   target = getRepoTarget(),
-): Promise<void> {
-  const file = buildBackgroundPreferenceFile(login, preference)
-  const sha = await getSha(file.path, target)
-  await gh(`/repos/${target.owner}/${target.repo}/contents/${encodeRepoPath(file.path)}`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      message: file.message,
-      content: encodeBase64(file.text),
-      branch: target.branch,
-      ...(sha ? { sha } : {}),
-    }),
-  })
+): Promise<SettingsSnapshotResult> {
+  const context = await getSettingsDiscussionRepository(target)
+  const discussion = await locateSettingsDiscussion(login, context, target)
+  if (!discussion) return { snapshot: null, url: null, categoryName: context.categoryName }
+  return {
+    snapshot: parseSettingsDiscussionBody(discussion.body, login),
+    url: discussion.url,
+    categoryName: context.categoryName,
+  }
+}
+
+/** 把快照写回账号的设置讨论（没有就创建）。 */
+export async function saveGithubSettingsSnapshot(
+  login: string,
+  snapshot: SettingsSnapshot,
+  target = getRepoTarget(),
+): Promise<{ url: string; created: boolean }> {
+  const context = await getSettingsDiscussionRepository(target)
+  const existing = await locateSettingsDiscussion(login, context, target)
+  const latest = existing ? parseSettingsDiscussionBody(existing.body, login) : null
+  const body = renderSettingsDiscussionBody(login, mergeSettingsForSave(snapshot, latest))
+  if (existing) {
+    await githubGraphql(
+      `mutation UpdateSettingsDiscussion($discussionId: ID!, $body: String!) {
+        updateDiscussion(input: { discussionId: $discussionId, body: $body }) {
+          discussion { id }
+        }
+      }`,
+      { discussionId: existing.id, body },
+    )
+    writeSettingsRefCache(login, { number: existing.number, id: existing.id, updatedAt: Date.now() })
+    return { url: existing.url, created: false }
+  }
+  const data = await githubGraphql<{ createDiscussion: { discussion: SettingsDiscussionNode | null } }>(
+    `mutation CreateSettingsDiscussion(
+      $repositoryId: ID!
+      $categoryId: ID!
+      $title: String!
+      $body: String!
+    ) {
+      createDiscussion(input: {
+        repositoryId: $repositoryId
+        categoryId: $categoryId
+        title: $title
+        body: $body
+      }) {
+        discussion { id number url }
+      }
+    }`,
+    {
+      repositoryId: context.repositoryId,
+      categoryId: context.categoryId,
+      title: settingsDiscussionTitle(login),
+      body,
+    },
+  )
+  const created = data.createDiscussion?.discussion
+  if (!created) throw new Error('无法创建用于保存设置的 GitHub Discussion')
+  writeSettingsRefCache(login, { number: created.number, id: created.id, updatedAt: Date.now() })
+  return { url: created.url, created: true }
+}
+
+/* ------------------------- 旧版「设置写进仓库」的清理 ------------------------- */
+
+/** 旧版存放在仓库里的账号偏好文件（issue #130 要取消的那种写法）。 */
+export function legacySettingsPaths(login: string): string[] {
+  const safeLogin = login.trim().replace(/[^a-zA-Z0-9-]/g, '')
+  if (!safeLogin) return []
+  return [fontSettingsPath(safeLogin), backgroundSettingsPath(safeLogin)]
+}
+
+/** 读取旧版仓库文件里的字体与外观偏好，合并成一份可用于迁移的快照值；读不到就返回空对象。 */
+export async function loadLegacySettingsValues(login: string, target = getRepoTarget()): Promise<PersonalSettings> {
+  const values: PersonalSettings = {}
+  const [font, background] = await Promise.all([
+    fetchGithubFontPreference(login, target).catch(() => null),
+    fetchGithubBackgroundPreference(login, target).catch(() => null),
+  ])
+  if (font) {
+    values.font = {
+      families: splitPreferenceFamilies(font.family),
+      monoFamilies: splitPreferenceFamilies(font.monoFamily),
+      sizePercent: font.sizePercent,
+      updatedAt: font.updatedAt,
+    }
+  }
+  if (background) {
+    if (typeof background.color === 'string') {
+      values.background = { color: background.color, intensity: background.intensity, updatedAt: background.updatedAt }
+    }
+    if (background.colorTheme) values.colorTheme = background.colorTheme
+    if (background.themeMode) values.themeMode = background.themeMode
+    if (background.animatedBackground) values.animatedBackground = background.animatedBackground
+    if (background.siteLayout) values.siteLayout = background.siteLayout
+  }
+  return values
+}
+
+function splitPreferenceFamilies(value: string | undefined): string[] {
+  if (!value) return []
+  return value
+    .split(/[,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+/**
+ * 删除仓库里的旧版设置文件（只在设置页「清理仓库中的旧设置」按钮里调用）。
+ *
+ * 这一步刻意不是自动做的：仓库文件属于站点内容，删不删由站长决定；
+ * 新版本的设置一律走 Discussions，不会再往仓库写任何设置文件。
+ */
+export async function deleteLegacySettingsFiles(login: string, target = getRepoTarget()): Promise<string[]> {
+  const removed: string[] = []
+  for (const path of legacySettingsPaths(login)) {
+    const sha = await getSha(path, target)
+    if (!sha) continue
+    await gh(`/repos/${target.owner}/${target.repo}/contents/${encodeRepoPath(path)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        message: `chore(settings): 移除 @${login} 的旧版仓库设置文件（改用 GitHub Discussions 保存）`,
+        branch: target.branch,
+        sha,
+      }),
+    })
+    removed.push(path)
+  }
+  return removed
 }

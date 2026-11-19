@@ -14,6 +14,16 @@ import {
 type Theme = 'light' | 'dark'
 
 const COLOR_THEME_SETTING = 'colorTheme'
+/**
+ * 明暗模式同时写两处（issue #129）：
+ *   · localStorage 的 `starlog:theme` —— index.html 的首屏脚本要抢在 React 之前读到它，
+ *     否则会闪一下错误底色；
+ *   · 集中偏好里的 `themeMode` —— 它是参与「账号设置自动同步」的那一份。
+ * 读取时优先集中偏好，缺省时回退旧键，因此老安装的设置不会丢。
+ */
+const THEME_MODE_SETTING = 'themeMode'
+
+const THEME_MODES = ['light', 'dark', 'system'] as const
 
 interface ThemeCtx {
   /** 实际生效的明暗（用户的设置 / 跟随系统）；动态背景会读取它来切换自己的配色。 */
@@ -44,11 +54,15 @@ const Ctx = createContext<ThemeCtx>({
   setColorTheme: () => {},
 })
 
+function isThemeMode(value: unknown): value is ThemeMode {
+  return typeof value === 'string' && (THEME_MODES as readonly string[]).includes(value)
+}
+
 function readMode(): ThemeMode {
   if (typeof window === 'undefined') return 'light'
   try {
-    const stored = localStorage.getItem(STORAGE_KEYS.theme)
-    if (stored === 'dark' || stored === 'light' || stored === 'system') return stored
+    const stored = readPersonalSetting<ThemeMode>(THEME_MODE_SETTING, STORAGE_KEYS.theme)
+    if (isThemeMode(stored)) return stored
   } catch {
     // 隐私模式下 localStorage 可能不可用
   }
@@ -127,11 +141,19 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }
   }, [mode])
 
+  // 明暗模式也要进集中偏好，才会被「账号设置自动同步」带上云端（issue #129）。
+  // 只在值真的变化时写，避免首屏为了一个相同的值多派发一次事件。
+  useEffect(() => {
+    if (readPersonalSetting<ThemeMode>(THEME_MODE_SETTING) === mode) return
+    writePersonalSetting(THEME_MODE_SETTING, mode)
+  }, [mode])
+
   // 设置页 / 页头色卡 / 其它标签页的修改都立即生效
   useEffect(() => {
     const sync = (event?: Event) => {
       const name = (event as CustomEvent<{ name?: string }> | undefined)?.detail?.name
       if (!name || name === COLOR_THEME_SETTING) setColorThemeState(readColorTheme())
+      if (!name || name === THEME_MODE_SETTING) setModeState(readMode())
     }
     window.addEventListener('starlog:settings-changed', sync)
     window.addEventListener('storage', sync)

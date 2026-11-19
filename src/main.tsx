@@ -9,6 +9,7 @@ import App from './App'
 import { ThemeProvider } from './lib/theme'
 import { FontProvider } from './lib/font'
 import { BackgroundProvider } from './lib/background'
+import { SettingsSyncProvider } from './lib/settingsSync'
 import { AuthProvider } from './lib/auth'
 import { ToastProvider } from './components/Toast'
 import { StorageGuard } from './components/StorageGuard'
@@ -19,18 +20,23 @@ import './styles/index.css'
 const basename = import.meta.env.BASE_URL.replace(/\/$/, '')
 
 function Tree() {
+  // 顺序说明（issue #129 / #130）：SettingsSyncProvider 要把远端设置写回 settingsStore，
+  // 而 FontProvider / BackgroundProvider 监听同一个事件来套用到文档上，因此它必须排在这两者
+  // **之下**；又因为它要用 toast 提示「旧仓库设置已迁移」，得排在 ToastProvider **之下**。
   return (
     <ThemeProvider>
       <AuthProvider>
-        <FontProvider>
-          <BackgroundProvider>
-            <ToastProvider>
-              <StorageGuard>
-                <App />
-              </StorageGuard>
-            </ToastProvider>
-          </BackgroundProvider>
-        </FontProvider>
+        <ToastProvider>
+          <SettingsSyncProvider>
+            <FontProvider>
+              <BackgroundProvider>
+                <StorageGuard>
+                  <App />
+                </StorageGuard>
+              </BackgroundProvider>
+            </FontProvider>
+          </SettingsSyncProvider>
+        </ToastProvider>
       </AuthProvider>
     </ThemeProvider>
   )

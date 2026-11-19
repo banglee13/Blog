@@ -86,6 +86,8 @@ jobs:
         run: |
           set -euo pipefail
           cp dist-offline/index.html starlog-offline-latest.html
+          # 局域网协作中心（issue #112）：零依赖的单文件脚本，和离线 HTML 放在一起就能用
+          cp scripts/offline-hub.mjs starlog-offline-hub.mjs
           DATE_STR=$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M')
           SIZE_BYTES=$(wc -c < starlog-offline-latest.html | tr -d ' ')
           SHA256_SUM=$(sha256sum starlog-offline-latest.html | awk '{print $1}')
@@ -110,7 +112,7 @@ jobs:
           git tag -fa offline "${TARGET_SHA}" -m "离线单文件版 (${SHORT_SHA})"
           git push origin refs/tags/offline --force
 
-          gh release create offline starlog-offline-latest.html \
+          gh release create offline starlog-offline-latest.html starlog-offline-hub.mjs \
             --title "离线单文件版（${DATE_STR} · ${SHORT_SHA}）" \
             --notes-file release-notes.generated.md \
             --target "${TARGET_SHA}" \

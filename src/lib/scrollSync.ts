@@ -3,7 +3,7 @@
  *
  * 设计要点：
  * 1. 精确文本镜像（`rebuildTextareaLineMirror`）：完整复制 `<textarea>` 的计算盒模型、字体、字距、
- *    行高与折行规则，测量每一原始行号在编辑器文档中的精确像素区间 `[taTop, taBottom]`。
+ *    行高与折行规则，一个源码行一个 `data-l` 子块，据此得到每行在编辑器文档中的精确像素区间。
  * 2. 全层级可见块区间采样（`collectScrollSyncAnchors`）：
  *    - 递归穿透展开态 `<details open>` 折叠框、`<blockquote>`、`<ul>`/`<ol>`、`.table-tuack-wrapper`
  *      等容器，捕获内部每一个可见标题、段落、列表项、公式块、代码块、表格与交互组件的 `[startLine..endLine]`；
@@ -78,7 +78,7 @@ export function copyTextareaMirrorStyles(ta: HTMLTextAreaElement, mirror: HTMLEl
   mirror.style.wordBreak = cs.wordBreak || 'normal'
 }
 
-/** 重建 `<textarea>` 行号测量镜像，返回镜像构建时使用的 `clientWidth`。 */
+/** 重建 `<textarea>` 的按行测量镜像，返回镜像构建时使用的 `clientWidth`。 */
 export function rebuildTextareaLineMirror(
   ta: HTMLTextAreaElement,
   mirror: HTMLElement,
@@ -92,6 +92,34 @@ export function rebuildTextareaLineMirror(
     )
     .join('')
   return ta.clientWidth
+}
+
+/**
+ * 「一直下滑到最后一行停在编辑区最上方」需要的底部留白高度（issue #127）。
+ *
+ * 可滚动行程 = 内容高 + 上内边距 + 底部留白 - 视口高，要让最后一行（高度 lineHeight）
+ * 的顶边能贴到视口顶部，留白至少要 `视口高 - 行高`。留白写在 textarea 的 padding-bottom 上，
+ * 所以 `extraPadding`（原有的下内边距）要一起算进可滚行程。
+ */
+export function computeScrollPastEndPadding(
+  clientHeight: number,
+  lineHeight: number,
+  extraPadding = 0,
+): number {
+  if (!Number.isFinite(clientHeight) || !Number.isFinite(lineHeight) || clientHeight <= 0 || lineHeight <= 0) {
+    return 0
+  }
+  return Math.max(0, Math.round(clientHeight - lineHeight - extraPadding))
+}
+
+/** 数文本里的行数（按 `\n` 计，末行没有换行符也算一行）。空文本算 1 行。 */
+export function countTextLines(text: string): number {
+  if (!text) return 1
+  let lines = 1
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10) lines += 1
+  }
+  return lines
 }
 
 /** 判断元素是否位于未展开的 `<details>` 折叠框内部（处于隐藏态）。 */
